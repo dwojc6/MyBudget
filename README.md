@@ -22,7 +22,7 @@ This app is designed to be a privacy-first, lightweight mobile interface for you
 
 | Dashboard | Setup Screen | Transaction List |
 |:---:|:---:|:---:|
-| <img src="screenshots/dashboard.png" width="250"> | <img src="screenshots/setup.png" width="250"> | <img src="screenshots/transactions.png" width="250"> |
+| <img src="Screenshots/Dashboard.png" width="250"> | <img src="Screenshots/Setup.png" width="250"> | <img src="Screenshots/Transactions.png" width="250"> |
 
 ## ⚙️ Setup & Installation
 
