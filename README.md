@@ -71,7 +71,7 @@ Contributions are welcome! If you'd like to add features like charts, tag manage
 
 ## 📄 License
 
-Distributed under the MIT License. See `LICENSE` for more information.
+Distributed under the MIT License. See `[License](LICENSE)` for more information.
 
 ## 🙏 Acknowledgments
 
