@@ -78,19 +78,21 @@ struct DashboardView: View {
                             
                             Spacer()
                             
-                            Button(action: {
-                                withAnimation {
-                                    editMode = editMode == .active ? .inactive : .active
+                            // NEW: Sort By Menu (Icon Only)
+                            Menu {
+                                Picker("Sort By", selection: $store.currentSortOption) {
+                                    ForEach(BudgetStore.SortOption.allCases) { option in
+                                        Text(option.rawValue).tag(option)
+                                    }
                                 }
-                            }) {
+                            } label: {
                                 Image(systemName: "arrow.up.arrow.down")
                                     .font(.subheadline)
-                                    .foregroundColor(editMode == .active ? .blue : .gray)
+                                    .foregroundColor(.blue)
                                     .padding(6)
                                     .background(Color(UIColor.systemGray5))
-                                    .clipShape(Circle())
+                                    .cornerRadius(8)
                             }
-                            .buttonStyle(PlainButtonStyle())
                             .padding(.trailing, 8)
                             
                             Button(action: { showAddCategory = true }) {
@@ -107,8 +109,8 @@ struct DashboardView: View {
                         ForEach(store.categoryNames, id: \.self) { category in
                             let spent = store.getSpent(for: category)
                             
-                            // UPDATED: Check against "❌ Uncategorized"
-                            if !(category == "❌ Uncategorized" && spent == 0) {
+                            // UPDATED: Check against "Uncategorized"
+                            if !(category == "Uncategorized" && spent == 0) {
                                 Button(action: {
                                     selectedCategoryForEdit = category
                                     let current = store.getBudget(for: category)
