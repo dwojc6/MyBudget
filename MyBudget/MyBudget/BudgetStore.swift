@@ -11,46 +11,84 @@ import Combine
 
 @MainActor
 class BudgetStore: ObservableObject {
+    
+// 1. Define the options
+    enum SortOption: String, CaseIterable, Identifiable {
+        case totalSpending = "Total Spending"
+        case percentSpending = "% of Total Spending"
+        case alphabetical = "Alphabetical"
+        
+        var id: String { self.rawValue }
+    }
+
+    // ... inside the class ...
+    
+    // 2. Add the state variable
+    @Published var currentSortOption: SortOption = .totalSpending
+
+    // 3. Update the categoryNames logic
+    var categoryNames: [String] {
+        let allCategories = categoryOrder
+        
+        switch currentSortOption {
+        case .alphabetical:
+            return allCategories.sorted { name1, name2 in
+                // Strict Cleaning: Keep ONLY letters and numbers.
+                let clean1 = name1.filter { $0.isLetter || $0.isNumber }
+                let clean2 = name2.filter { $0.isLetter || $0.isNumber }
+                
+                // Compare the cleaned "text-only" versions
+                return clean1.localizedCaseInsensitiveCompare(clean2) == .orderedAscending
+            }
+            
+        case .totalSpending, .percentSpending:
+            return allCategories.sorted { name1, name2 in
+                let spent1 = getSpent(for: name1)
+                let spent2 = getSpent(for: name2)
+                if spent1 == spent2 { return name1 < name2 }
+                return spent1 > spent2
+            }
+        }
+    }
+    
     @Published var transactions: [SimpleFinTransaction] = [] {
         didSet {
             updatePaycheckDates()
+            updateCurrentPeriodCache()
             if let encoded = try? JSONEncoder().encode(transactions) {
                 UserDefaults.standard.set(encoded, forKey: "SavedTransactions")
             }
         }
     }
     
-    private var paycheckDates: Set<String> = []
-    private let dayFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateFormat = "yyyy-MM-dd"
-        return f
-    }()
+    @Published var currentPeriodTransactions: [SimpleFinTransaction] = []
     
-    @Published var selectedDate: Date = Date()
-    @Published var startingBalance: Decimal = 0.0
-    @Published var selectedCategoryFilter: String? = nil
-    
-    @Published var hiddenTransactionIDs: Set<String> = [] {
+    @Published var categoriesMap: [Int: LunchMoneyCategory] = [:] {
         didSet {
-            let array = Array(hiddenTransactionIDs)
-            UserDefaults.standard.set(array, forKey: "HiddenTxns")
+            if let encoded = try? JSONEncoder().encode(categoriesMap) {
+                UserDefaults.standard.set(encoded, forKey: "SavedCategories")
+            }
+            refreshCategoryList()
         }
-    }
-    
-    @Published var payeeRules: [String: String] = [:] {
-        didSet { UserDefaults.standard.set(payeeRules, forKey: "PayeeRules") }
     }
     
     @Published var transactionCategoryOverrides: [String: String] = [:] {
         didSet { UserDefaults.standard.set(transactionCategoryOverrides, forKey: "TxnOverrides") }
     }
     
-    @Published var periodBudgets: [String: [String: Decimal]] = [:] {
+    @Published var defaultCategoryBudgets: [String: Decimal] = [:] {
         didSet {
-            if let encoded = try? JSONEncoder().encode(periodBudgets) {
-                UserDefaults.standard.set(encoded, forKey: "PeriodBudgets")
-            }
+            saveBudgets()
+        }
+    }
+    
+    // Helper to safely save budgets and print errors if it fails
+    private func saveBudgets() {
+        do {
+            let encoded = try JSONEncoder().encode(defaultCategoryBudgets)
+            UserDefaults.standard.set(encoded, forKey: "DefaultCategoryBudgets")
+        } catch {
+            print("❌ FAILED TO SAVE BUDGETS: \(error.localizedDescription)")
         }
     }
     
@@ -58,87 +96,83 @@ class BudgetStore: ObservableObject {
         didSet { UserDefaults.standard.set(categoryOrder, forKey: "CategoryOrder") }
     }
     
+    @Published var budgetStartDay: Int = 1 {
+        didSet { UserDefaults.standard.set(budgetStartDay, forKey: "BudgetStartDay") }
+    }
+    
+    private var paycheckDates: [Date] = []
+    
+    private let dayFormatter: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; return f
+    }()
+    
+    @Published var selectedDate: Date = Date() {
+        didSet { updateCurrentPeriodCache() }
+    }
+    
+    @Published var startingBalance: Decimal = 0.0
+    @Published var selectedCategoryFilter: String? = nil
+    @Published var hiddenTransactionIDs: Set<String> = [] {
+        didSet {
+            UserDefaults.standard.set(Array(hiddenTransactionIDs), forKey: "HiddenTxns")
+            updateCurrentPeriodCache()
+        }
+    }
+    @Published var periodBudgets: [String: [String: Decimal]] = [:] {
+        didSet {
+            if let encoded = try? JSONEncoder().encode(periodBudgets) {
+                UserDefaults.standard.set(encoded, forKey: "PeriodBudgets")
+            }
+        }
+    }
+    @Published var payeeRules: [String: String] = [:] {
+        didSet { UserDefaults.standard.set(payeeRules, forKey: "PayeeRules") }
+    }
+    
     @Published var minDate: Date? {
         didSet {
-            if let date = minDate {
-                UserDefaults.standard.set(date.timeIntervalSince1970, forKey: "MinDate")
-            }
+            if let date = minDate { UserDefaults.standard.set(date.timeIntervalSince1970, forKey: "MinDate") }
         }
     }
     
     @Published var accessUrl: String? {
         didSet { UserDefaults.standard.set(accessUrl, forKey: "LunchMoneyToken") }
     }
+    
     @Published var isSyncing = false
     @Published var errorMessage: String?
-    
-    // UPDATED: Zeroed out amounts for public release
-    @Published var defaultCategoryBudgets: [String: Decimal] = [
-        "💰 Paycheck": 0.00,
-        "💵 Income": 0.00,
-        "🛒 Groceries": 0.00,
-        "🍽️ Restaurants": 0.00,
-        "⛽️ Gas": 0.00,
-        "🛍️ Shopping/Entertainment": 0.00,
-        "🏠 Household": 0.00,
-        "🍼 Daycare": 0.00,
-        "🚗 Car Loan": 0.00,
-        "🔄 Subscriptions": 0.00,
-        "🤑 Savings": 0.00,
-        "💸 CC Payment": 0.00,
-        "❌ Uncategorized": 0.00
-    ] {
-        didSet {
-            if let encoded = try? JSONEncoder().encode(defaultCategoryBudgets) {
-                UserDefaults.standard.set(encoded, forKey: "DefaultCategoryBudgets")
-            }
-        }
-    }
+    @Published var showErrorAlert = false
     
     private let service = LunchMoneyService()
-    var categoryNames: [String] { return categoryOrder }
     
     init() {
         self.accessUrl = UserDefaults.standard.string(forKey: "LunchMoneyToken")
-        let savedBalance = UserDefaults.standard.double(forKey: "StartingBalance")
-        if savedBalance != 0.0 { self.startingBalance = Decimal(savedBalance) }
+        self.startingBalance = Decimal(UserDefaults.standard.double(forKey: "StartingBalance"))
         
-        let savedMin = UserDefaults.standard.double(forKey: "MinDate")
-        if savedMin > 0 { self.minDate = Date(timeIntervalSince1970: savedMin) }
+        let savedDay = UserDefaults.standard.integer(forKey: "BudgetStartDay")
+        self.budgetStartDay = savedDay > 0 ? savedDay : 1
         
-        if let savedRules = UserDefaults.standard.object(forKey: "PayeeRules") as? [String: String] {
-            self.payeeRules = savedRules
+        if let min = UserDefaults.standard.object(forKey: "MinDate") as? Double { self.minDate = Date(timeIntervalSince1970: min) }
+        
+        if let savedCats = UserDefaults.standard.data(forKey: "SavedCategories"),
+           let decoded = try? JSONDecoder().decode([Int: LunchMoneyCategory].self, from: savedCats) {
+            self.categoriesMap = decoded
+        }
+        
+        if let savedDefaults = UserDefaults.standard.data(forKey: "DefaultCategoryBudgets"),
+           let decoded = try? JSONDecoder().decode([String: Decimal].self, from: savedDefaults) {
+            self.defaultCategoryBudgets = decoded
+        }
+        
+        if let savedOrder = UserDefaults.standard.array(forKey: "CategoryOrder") as? [String] {
+            self.categoryOrder = savedOrder
         }
         
         if let savedOverrides = UserDefaults.standard.object(forKey: "TxnOverrides") as? [String: String] {
             self.transactionCategoryOverrides = savedOverrides
         }
         
-        if let savedHidden = UserDefaults.standard.array(forKey: "HiddenTxns") as? [String] {
-            self.hiddenTransactionIDs = Set(savedHidden)
-        }
-        
-        if let savedData = UserDefaults.standard.data(forKey: "PeriodBudgets"),
-           let decoded = try? JSONDecoder().decode([String: [String: Decimal]].self, from: savedData) {
-            self.periodBudgets = decoded
-        }
-        
-        if let savedDefaultsData = UserDefaults.standard.data(forKey: "DefaultCategoryBudgets"),
-           let decodedDefaults = try? JSONDecoder().decode([String: Decimal].self, from: savedDefaultsData) {
-            self.defaultCategoryBudgets = decodedDefaults
-        }
-        
-        if let savedOrder = UserDefaults.standard.array(forKey: "CategoryOrder") as? [String] {
-            self.categoryOrder = savedOrder
-            // Ensure new emoji keys exist if migrating from old order
-            for key in defaultCategoryBudgets.keys {
-                if !self.categoryOrder.contains(key) {
-                    self.categoryOrder.append(key)
-                }
-            }
-        } else {
-            self.categoryOrder = defaultCategoryBudgets.keys.sorted()
-        }
+        self.refreshCategoryList()
         
         if let savedData = UserDefaults.standard.data(forKey: "SavedTransactions"),
            let decoded = try? JSONDecoder().decode([SimpleFinTransaction].self, from: savedData) {
@@ -146,326 +180,319 @@ class BudgetStore: ObservableObject {
             self.updatePaycheckDates()
         }
         
-        if let min = self.minDate {
-             let currentStart = getStartOfPeriod(for: selectedDate)
-             let minStart = getStartOfPeriod(for: min)
-             if currentStart < minStart {
-                 self.selectedDate = min
-             }
+        if let savedHidden = UserDefaults.standard.array(forKey: "HiddenTxns") as? [String] {
+            self.hiddenTransactionIDs = Set(savedHidden)
         }
+        
+        if let savedBudgets = UserDefaults.standard.data(forKey: "PeriodBudgets"),
+           let decoded = try? JSONDecoder().decode([String: [String: Decimal]].self, from: savedBudgets) {
+            self.periodBudgets = decoded
+        }
+        
+        self.updateCurrentPeriodCache()
+    }
+    
+    private func updateCurrentPeriodCache() {
+        let periodStart = getStartOfPeriod(for: selectedDate)
+        
+        let periodEnd: Date
+        if let nextPaycheck = paycheckDates.sorted().first(where: { $0 > periodStart }) {
+            periodEnd = nextPaycheck
+        } else {
+            periodEnd = Calendar.current.date(byAdding: .month, value: 1, to: periodStart)!
+        }
+        
+        self.currentPeriodTransactions = transactions.filter { txn in
+            if hiddenTransactionIDs.contains(txn.id) { return false }
+            return txn.date >= periodStart && txn.date < periodEnd
+        }
+    }
+    
+    private func refreshCategoryList() {
+        var newBudgets = self.defaultCategoryBudgets
+        var newOrder = self.categoryOrder
+        
+        for category in categoriesMap.values {
+            if newBudgets[category.name] == nil {
+                newBudgets[category.name] = 0.0
+            }
+            if !newOrder.contains(category.name) {
+                newOrder.append(category.name)
+            }
+        }
+        
+        if newBudgets["Uncategorized"] == nil { newBudgets["Uncategorized"] = 0.0 }
+        if !newOrder.contains("Uncategorized") { newOrder.append("Uncategorized") }
+        
+        self.defaultCategoryBudgets = newBudgets
+        self.categoryOrder = newOrder
+    }
+    
+    func syncTransactions(startDate: Date? = nil, specificPeriodStart: Date? = nil, specificPeriodEnd: Date? = nil) async -> (String, Bool) {
+        guard let token = accessUrl else { return ("No token", true) }
+        isSyncing = true
+        
+        do {
+            let categories = try await service.fetchCategories(apiKey: token)
+            var newMap: [Int: LunchMoneyCategory] = [:]
+            for cat in categories {
+                newMap[cat.id] = cat
+                if let kids = cat.children {
+                    for kid in kids {
+                        newMap[kid.id] = kid
+                    }
+                }
+            }
+            await MainActor.run { self.categoriesMap = newMap }
+            
+            let summaryStart: Date
+            let summaryEnd: Date
+            
+            if let start = specificPeriodStart, let end = specificPeriodEnd {
+                summaryStart = start
+                summaryEnd = end
+            } else {
+                summaryStart = getStartOfPeriod(for: selectedDate)
+                let nextPeriodStart = Calendar.current.date(byAdding: .month, value: 1, to: summaryStart)!
+                summaryEnd = nextPeriodStart.addingTimeInterval(-86400)
+            }
+            
+            let (aligned, summaryCategories) = try await service.fetchBudgetSummary(apiKey: token, startDate: summaryStart, endDate: summaryEnd)
+            
+            // UPDATED: Only overwrite budgets if the API returned an aligned response
+            if aligned {
+                var updatedDefaults = self.defaultCategoryBudgets
+                for item in summaryCategories {
+                    if let catName = newMap[item.category_id]?.name, let amount = item.totals.budgeted {
+                        updatedDefaults[catName] = Decimal(amount)
+                    }
+                }
+                await MainActor.run { self.defaultCategoryBudgets = updatedDefaults }
+            } else {
+                print("Skipping budget update: Period not aligned with LunchMoney configuration.")
+            }
+            
+            do {
+                try await service.triggerPlaidSync(apiKey: token)
+            } catch {
+                print("⚠️ Plaid Sync Skipped: \(error.localizedDescription)")
+                // We intentionally catch and ignore the error so the rest of the sync proceeds
+            }
+            
+            // Keep the sleep to ensure backend consistency if a sync DID happen
+            try await Task.sleep(nanoseconds: 1 * 1_000_000_000)
+            
+            let fetchDate = startDate ?? Calendar.current.date(byAdding: .day, value: -7, to: Date())!
+            let (newTransactions, apiErrors) = try await service.fetchTransactions(apiKey: token, startDate: fetchDate)
+            
+            if !apiErrors.isEmpty {
+                isSyncing = false
+                return ("Error: " + apiErrors.joined(separator: ", "), true)
+            }
+            
+            let initialCount = self.transactions.count
+            var txnMap = Dictionary(uniqueKeysWithValues: self.transactions.map { ($0.id, $0) })
+            for txn in newTransactions { txnMap[txn.id] = txn }
+            self.transactions = txnMap.values.sorted { $0.date > $1.date }
+            
+            isSyncing = false
+            let newCount = max(0, self.transactions.count - initialCount)
+            return ("Synced. \(newCount) imported", false)
+            
+        } catch {
+            isSyncing = false
+            return ("Failed: \(error.localizedDescription)", true)
+        }
+    }
+    
+    func connectLunchMoney(token: String, initialBalance: Decimal, importStartDate: Date, periodStart: Date, periodEnd: Date) async {
+        isSyncing = true
+        errorMessage = nil
+        showErrorAlert = false
+        
+        do {
+            let (aligned, _) = try await service.fetchBudgetSummary(apiKey: token, startDate: periodStart, endDate: periodEnd)
+            
+            if !aligned {
+                self.errorMessage = "Aligned: False. The dates selected do not match a valid LunchMoney budgeting period. Please adjust the Start/End dates."
+                self.showErrorAlert = true
+                self.isSyncing = false
+                return
+            }
+            
+            self.accessUrl = token
+            let startDay = Calendar.current.component(.day, from: periodStart)
+            self.budgetStartDay = startDay
+            
+            _ = await syncTransactions(
+                startDate: importStartDate,
+                specificPeriodStart: periodStart,
+                specificPeriodEnd: periodEnd
+            )
+            
+            self.setStartingBalance(initialBalance)
+            self.minDate = importStartDate
+            
+            if let lastTxn = transactions.max(by: { $0.date < $1.date }) {
+                self.selectedDate = lastTxn.date
+            } else {
+                self.selectedDate = importStartDate
+            }
+            
+        } catch {
+            self.errorMessage = "Connection Failed: \(error.localizedDescription)"
+            self.showErrorAlert = true
+        }
+        
+        isSyncing = false
+    }
+    
+    // UPDATED: Fix for Future Periods
+    func getStartOfPeriod(for date: Date) -> Date {
+        // 1. Try to find a paycheck on or before this date
+        if let periodStart = paycheckDates.sorted().last(where: { $0 <= date || Calendar.current.isDate($0, inSameDayAs: date) }) {
+            
+            // CHECK: Is this paycheck "current"?
+            // We changed 35 to 28. This ensures that once you are a full month (28+ days)
+            // past the last paycheck, the app allows the new period to start
+            // instead of forcing it back to the previous one.
+            let daysDiff = Calendar.current.dateComponents([.day], from: periodStart, to: date).day ?? 0
+            if daysDiff < 28 {
+                return periodStart
+            }
+        }
+        
+        // 2. Fallback / Future Logic
+        let calendar = Calendar.current
+        let day = calendar.component(.day, from: date)
+        var comps = calendar.dateComponents([.year, .month], from: date)
+        comps.day = self.budgetStartDay
+        
+        if day >= self.budgetStartDay {
+            return calendar.date(from: comps)!
+        } else {
+            return calendar.date(byAdding: .month, value: -1, to: calendar.date(from: comps)!)!
+        }
+    }
+    
+    func getCategory(for transaction: SimpleFinTransaction) -> String {
+        if let override = transactionCategoryOverrides[transaction.id] { return override }
+        if let id = transaction.categoryId, let cat = categoriesMap[id] { return cat.name }
+        return "Uncategorized"
+    }
+    
+    func isIncomeCategory(_ categoryName: String) -> Bool {
+        if let cat = categoriesMap.values.first(where: { $0.name == categoryName }) { return cat.is_income }
+        return false
     }
     
     private func updatePaycheckDates() {
-        let dates = transactions
-            .filter { BudgetLogic.isPaycheck($0) }
-            .map { dayFormatter.string(from: $0.date) }
-        self.paycheckDates = Set(dates)
+        let calendar = Calendar.current
+        
+        let rawDates = transactions
+            .filter { getCategory(for: $0).lowercased().contains("paycheck") }
+            .map { $0.date }
+            .sorted()
+        
+        var clusteredDates: [Date] = []
+        
+        for date in rawDates {
+            let startOfDay = calendar.startOfDay(for: date)
+            
+            if let lastGroupDate = clusteredDates.last {
+                if let daysDiff = calendar.dateComponents([.day], from: lastGroupDate, to: startOfDay).day, daysDiff < 5 {
+                    continue
+                }
+            }
+            clusteredDates.append(startOfDay)
+        }
+        
+        self.paycheckDates = clusteredDates
+        
+        // NEW: Sync future projections to the most recent paycheck date.
+        // This ensures that if your paycheck lands on the 23rd,
+        // the future months (Feb, Mar, etc.) will also default to starting on the 23rd.
+        if let lastPaycheck = clusteredDates.max() {
+            let day = calendar.component(.day, from: lastPaycheck)
+            if self.budgetStartDay != day {
+                self.budgetStartDay = day
+            }
+        }
     }
     
     func isTransactionOnPayday(_ transaction: SimpleFinTransaction) -> Bool {
-        let key = dayFormatter.string(from: transaction.date)
-        return paycheckDates.contains(key)
+        let calendar = Calendar.current
+        return paycheckDates.contains { calendar.isDate($0, inSameDayAs: transaction.date) }
     }
     
-    func deleteCategory(at offsets: IndexSet) {
-        let categoriesToDelete = offsets.map { categoryOrder[$0] }
-        categoryOrder.remove(atOffsets: offsets)
-        for category in categoriesToDelete {
-            defaultCategoryBudgets.removeValue(forKey: category)
-        }
-    }
-    
-    func moveCategories(from source: IndexSet, to destination: Int) {
-        categoryOrder.move(fromOffsets: source, toOffset: destination)
-    }
-    
-    // CONNECT (SETUP)
-    func connectLunchMoney(token: String, startDate: Date, initialBalance: Decimal) async {
-        isSyncing = true
-        errorMessage = nil
-        do {
-            // Initial sync: Pull from user selected Start Date -> Today
-            let (fetchedTransactions, _) = try await service.fetchTransactions(apiKey: token, startDate: startDate, endDate: Date())
-            
-            self.setStartingBalance(initialBalance)
-            self.minDate = startDate
-            self.transactions = fetchedTransactions
-            self.accessUrl = token // Store API Key
-            
-            if let lastTxn = fetchedTransactions.max(by: { $0.date < $1.date }) {
-                self.selectedDate = lastTxn.date
-            } else {
-                 self.selectedDate = startDate
-            }
-            
-        } catch {
-            errorMessage = "Error: \(error.localizedDescription)"
-        }
-        isSyncing = false
-    }
-    
-    // SYNC (DASHBOARD)
-    func syncTransactions(startDate: Date? = nil) async -> (String, Bool) {
-        guard let token = accessUrl else { return ("No access token", true) }
-        isSyncing = true
-        
-        let fetchStartDate: Date
-        if let inputDate = startDate {
-            fetchStartDate = inputDate
-        } else {
-            let calendar = Calendar.current
-            fetchStartDate = calendar.date(byAdding: .day, value: -7, to: Date()) ?? Date()
-        }
-        
-        var resultMessage = ""
-        var isError = false
-        
-        do {
-            // 1. Trigger Plaid Sync
-            try await service.triggerPlaidSync(apiKey: token)
-            
-            // Optional: wait briefly
-            try await Task.sleep(nanoseconds: 1 * 1_000_000_000)
-            
-            // 2. Fetch Transactions
-            let (newTransactions, apiErrors) = try await service.fetchTransactions(apiKey: token, startDate: fetchStartDate, endDate: Date())
-            
-            if !apiErrors.isEmpty {
-                resultMessage = "Error: " + apiErrors.joined(separator: ", ")
-                isError = true
-            } else {
-                let initialCount = self.transactions.count
-                
-                var txnMap = Dictionary(uniqueKeysWithValues: self.transactions.map { ($0.id, $0) })
-                for txn in newTransactions {
-                    txnMap[txn.id] = txn
-                }
-                self.transactions = txnMap.values.sorted { $0.date > $1.date }
-                
-                let newCount = max(0, self.transactions.count - initialCount)
-                
-                resultMessage = "Synced successfully. \(newCount) imported"
-                isError = false
-            }
-            
-        } catch {
-            errorMessage = "Sync Failed: \(error.localizedDescription)"
-            resultMessage = "Failed: \(error.localizedDescription)"
-            isError = true
-        }
-        isSyncing = false
-        return (resultMessage, isError)
-    }
-    
-    func addManualTransaction(payee: String, amount: Decimal, category: String, date: Date, memo: String) {
-        let id = "MANUAL-\(UUID().uuidString)"
-        let amountString = "\(amount)"
-        let posted = date.timeIntervalSince1970
-        
-        let newTxn = SimpleFinTransaction(
-            id: id,
-            posted: posted,
-            amount: amountString,
-            description: memo,
-            payee: payee,
-            memo: memo,
-            transacted_at: posted
-        )
-        
-        self.transactions.append(newTxn)
-        self.transactions.sort { $0.date > $1.date }
-        self.transactionCategoryOverrides[id] = category
-    }
-    
-    func changeMonth(by value: Int) {
-        guard let newDate = Calendar.current.date(byAdding: .month, value: value, to: selectedDate) else { return }
-        
-        if value < 0, let min = minDate {
-            let minPeriodStart = getStartOfPeriod(for: min)
-            let targetPeriodStart = getStartOfPeriod(for: newDate)
-            if targetPeriodStart < minPeriodStart { return }
-        }
-        
-        selectedDate = newDate
-    }
-    
-    func deleteTransaction(_ transaction: SimpleFinTransaction) {
-        hiddenTransactionIDs.insert(transaction.id)
-        objectWillChange.send()
-    }
-    
-    // MARK: - Calculations
-    
-    private var isSelectedPeriodFuture: Bool {
-        let startOfPeriod = getStartOfPeriod(for: selectedDate)
-        let currentPeriodStart = getStartOfPeriod(for: Date())
-        return startOfPeriod > currentPeriodStart
-    }
-    
-    var periodHeaderTitle: String {
-        let selectedStart = getStartOfPeriod(for: selectedDate)
-        let currentStart = getStartOfPeriod(for: Date())
-        
-        if selectedStart > currentStart {
-            return "Future Period"
-        } else if selectedStart < currentStart {
-            return "Past Period"
-        } else {
-            return "Current Period"
-        }
-    }
-    
-    // UPDATED: Use emojis for logic checks
     var currentPeriodIncome: Decimal {
         if isSelectedPeriodFuture {
-            return (getBudget(for: "💵 Income", on: selectedDate) ) + (getBudget(for: "💰 Paycheck", on: selectedDate))
+            return categoryNames.filter { isIncomeCategory($0) }
+                .reduce(0) { $0 + getBudget(for: $1, on: selectedDate) }
         } else {
-            let periodTxns = getTransactionsForSelectedPeriod()
-            let positiveTxns = periodTxns.filter { $0.decimalAmount > 0 }
-            return abs(positiveTxns.reduce(0) { $0 + $1.decimalAmount })
+            return abs(currentPeriodTransactions.filter { $0.decimalAmount > 0 }.reduce(0) { $0 + $1.decimalAmount })
         }
     }
     
-    // UPDATED: Use emojis for logic checks
     var currentPeriodSpent: Decimal {
         if isSelectedPeriodFuture {
-            return categoryNames.filter {
-                $0 != "💵 Income" && $0 != "💰 Paycheck" && $0 != "🤑 Savings"
-            }.reduce(0) { $0 + getBudget(for: $1, on: selectedDate) }
+            return categoryNames.filter { !isIncomeCategory($0) && !$0.contains("Savings") }
+                .reduce(0) { $0 + getBudget(for: $1, on: selectedDate) }
         } else {
-            let periodTxns = getTransactionsForSelectedPeriod()
-            let negativeTxns = periodTxns.filter {
+            let filtered = currentPeriodTransactions.filter {
                 $0.decimalAmount < 0 &&
-                getCategory(for: $0) != "🤑 Savings" &&
-                getCategory(for: $0) != "💵 Income" &&
-                getCategory(for: $0) != "💰 Paycheck"
+                !isIncomeCategory(getCategory(for: $0)) &&
+                !getCategory(for: $0).contains("Savings")
             }
-            return abs(negativeTxns.reduce(0) { $0 + $1.decimalAmount })
+            return abs(filtered.reduce(0) { $0 + $1.decimalAmount })
         }
     }
     
-    // UPDATED: Use emojis for logic checks
     var totalLifetimeSavings: Decimal {
         let startOfPeriod = getStartOfPeriod(for: selectedDate)
         let now = Date()
         let currentPeriodStart = getStartOfPeriod(for: now)
         
         let allSavingsTxns = transactions.filter {
-            !hiddenTransactionIDs.contains($0.id) && getCategory(for: $0) == "🤑 Savings"
+            !hiddenTransactionIDs.contains($0.id) && getCategory(for: $0).contains("Savings")
         }
         let actualSavings = abs(allSavingsTxns.reduce(0) { $0 + $1.decimalAmount })
         
         if startOfPeriod > currentPeriodStart {
-            var accumulatedSavings = actualSavings
-            var pointerDate = currentPeriodStart
-            
-            while pointerDate <= startOfPeriod {
-                if pointerDate > currentPeriodStart {
-                    accumulatedSavings += getBudget(for: "🤑 Savings", on: pointerDate)
+            var accumulated = actualSavings
+            var pointer = currentPeriodStart
+            while pointer <= startOfPeriod {
+                if pointer > currentPeriodStart {
+                    let savingsCats = categoryNames.filter { $0.contains("Savings") }
+                    for cat in savingsCats {
+                        accumulated += getBudget(for: cat, on: pointer)
+                    }
                 }
-                pointerDate = Calendar.current.date(byAdding: .month, value: 1, to: pointerDate)!
+                pointer = Calendar.current.date(byAdding: .month, value: 1, to: pointer)!
             }
-            return accumulatedSavings
-        } else {
-            return actualSavings
+            return accumulated
         }
+        return actualSavings
     }
     
-    var monthlyNetBudget: Decimal {
-        return getNetBudget(for: selectedDate)
-    }
-    
-    // UPDATED: Use emojis for logic checks
     func getNetBudget(for date: Date) -> Decimal {
-        let income = (getBudget(for: "💵 Income", on: date) ) + (getBudget(for: "💰 Paycheck", on: date))
-        let expenses = categoryNames.filter {
-            $0 != "💵 Income" && $0 != "💰 Paycheck"
-        }.reduce(0) { $0 + getBudget(for: $1, on: date) }
+        let income = categoryNames.filter { isIncomeCategory($0) }
+            .reduce(0) { $0 + getBudget(for: $1, on: date) }
+        let expenses = categoryNames.filter { !isIncomeCategory($0) }
+            .reduce(0) { $0 + getBudget(for: $1, on: date) }
         return income - expenses
     }
     
-    func getCategory(for transaction: SimpleFinTransaction) -> String {
-        if let specificCategory = transactionCategoryOverrides[transaction.id] {
-            return specificCategory
-        }
-        
-        if let highPriority = BudgetLogic.getHighPriorityCategory(transaction) {
-            return highPriority
-        }
-        
-        if let userRule = payeeRules[transaction.uiName] { return userRule }
-        return BudgetLogic.categorize(transaction)
-    }
-    
-    func updateCategory(for transactionID: String, to newCategory: String) {
-        transactionCategoryOverrides[transactionID] = newCategory
-        objectWillChange.send()
-    }
-    
-    func getStartOfPeriod(for date: Date) -> Date {
-        let calendar = Calendar.current
-        let day = calendar.component(.day, from: date)
-        var components = calendar.dateComponents([.year, .month], from: date)
-        components.day = 24
-        
-        if day >= 24 {
-            return calendar.date(from: components)!
-        } else {
-            return calendar.date(byAdding: .month, value: -1, to: calendar.date(from: components)!)!
-        }
-    }
-    
-    var periodLabel: String {
-        let start = getStartOfPeriod(for: selectedDate)
-        let nextPeriodStart = Calendar.current.date(byAdding: .month, value: 1, to: start)!
-        let displayEnd = Calendar.current.date(byAdding: .day, value: -1, to: nextPeriodStart)!
-        
-        let startYear = Calendar.current.component(.year, from: start)
-        let endYear = Calendar.current.component(.year, from: displayEnd)
-        
-        let formatter = DateFormatter()
-        
-        if startYear == endYear {
-            formatter.dateFormat = "MMM d"
-            let startString = formatter.string(from: start)
-            
-            formatter.dateFormat = "MMM d ''yy"
-            let endString = formatter.string(from: displayEnd)
-            
-            return "\(startString) - \(endString)"
-        } else {
-            formatter.dateFormat = "MMM d ''yy"
-            return "\(formatter.string(from: start)) - \(formatter.string(from: displayEnd))"
-        }
-    }
-    
-    func setStartingBalance(_ amount: Decimal) {
-        startingBalance = amount
-        UserDefaults.standard.set(NSDecimalNumber(decimal: amount).doubleValue, forKey: "StartingBalance")
-    }
-    
-    func addCategory(name: String, amount: Decimal) {
-        defaultCategoryBudgets[name] = amount
-        if !categoryOrder.contains(name) {
-            categoryOrder.append(name)
-        }
-    }
-    
-    func updateBudget(for category: String, amount: Decimal) {
-        let period = currentPeriodKey
-        if periodBudgets[period] == nil {
-            periodBudgets[period] = [:]
-        }
-        periodBudgets[period]?[category] = amount
-        objectWillChange.send()
-    }
-    
-    var currentPeriodKey: String { return BudgetLogic.getPeriodLabel(for: selectedDate) }
-    
-    // UPDATED: Use emojis for logic checks
     func getProjectedEnd(for date: Date) -> Decimal {
-        let targetLabel = BudgetLogic.getPeriodLabel(for: date, bumpToNextPeriod: false)
-        let periodEnd = Calendar.current.date(byAdding: .month, value: 1, to: getStartOfPeriod(for: date))!
+        let periodStart = getStartOfPeriod(for: date)
+        
+        let periodEnd: Date
+        if let nextPaycheck = paycheckDates.sorted().first(where: { $0 > periodStart }) {
+            periodEnd = nextPaycheck
+        } else {
+            periodEnd = Calendar.current.date(byAdding: .month, value: 1, to: periodStart)!
+        }
+        
         let referenceDate = min(Date(), periodEnd)
         
         let activeTxns = transactions.filter { !hiddenTransactionIDs.contains($0.id) }
@@ -474,108 +501,213 @@ class BudgetStore: ObservableObject {
         var projectedAdjustment: Decimal = 0.0
         
         let periodTxns = activeTxns.filter {
-            BudgetLogic.getPeriodLabel(for: $0.date, bumpToNextPeriod: isTransactionOnPayday($0)) == targetLabel
+            $0.date >= periodStart && $0.date < periodEnd
         }
         
         for category in categoryNames {
-            let budgetAmount = getBudget(for: category, on: date)
+            let budget = getBudget(for: category, on: date)
             let catTxns = periodTxns.filter { getCategory(for: $0) == category }
-            let spentAmount = abs(catTxns.reduce(0) { $0 + $1.decimalAmount })
+            let spent = abs(catTxns.reduce(0) { $0 + $1.decimalAmount })
             
-            let isIncome = (category == "💵 Income" || category == "💰 Paycheck")
-            
-            if isIncome {
-                if budgetAmount > spentAmount {
-                    projectedAdjustment += (budgetAmount - spentAmount)
-                }
+            if isIncomeCategory(category) {
+                if budget > spent { projectedAdjustment += (budget - spent) }
             } else {
-                if budgetAmount > spentAmount {
-                    projectedAdjustment -= (budgetAmount - spentAmount)
-                }
+                if budget > spent { projectedAdjustment -= (budget - spent) }
             }
         }
-        
         return currentActual + projectedAdjustment
     }
     
-    var beginningBalance: Decimal {
-        let targetLabel = currentPeriodKey
+    func deleteCategory(at offsets: IndexSet) {
+        let categoriesToDelete = offsets.map { categoryOrder[$0] }
+        categoryOrder.remove(atOffsets: offsets)
+        for category in categoriesToDelete { defaultCategoryBudgets.removeValue(forKey: category) }
+    }
+    func moveCategories(from source: IndexSet, to destination: Int) { categoryOrder.move(fromOffsets: source, toOffset: destination) }
+    
+    func addManualTransaction(payee: String, amount: Decimal, category: String, date: Date, memo: String) {
+        let id = "MANUAL-\(UUID().uuidString)"
+        let posted = date.timeIntervalSince1970
+        let catID = categoriesMap.first(where: { $0.value.name == category })?.key
         
-        if isSelectedPeriodFuture {
-            let now = Date()
-            let currentPeriodStart = getStartOfPeriod(for: now)
-            let startOfPeriod = getStartOfPeriod(for: selectedDate)
-            
-            var accumulatedBalance = getProjectedEnd(for: now)
-            var pointerDate = Calendar.current.date(byAdding: .month, value: 1, to: currentPeriodStart)!
-            
-            while pointerDate < startOfPeriod {
-                let netForMonth = getNetBudget(for: pointerDate)
-                accumulatedBalance += netForMonth
-                pointerDate = Calendar.current.date(byAdding: .month, value: 1, to: pointerDate)!
+        let newTxn = SimpleFinTransaction(id: id, posted: posted, amount: "\(amount)", description: memo, payee: payee, memo: memo, transacted_at: posted, categoryId: catID)
+        transactions.append(newTxn)
+        transactions.sort { $0.date > $1.date }
+    }
+    
+    func changeMonth(by value: Int) {
+        guard !paycheckDates.isEmpty else {
+            guard let newDate = Calendar.current.date(byAdding: .month, value: value, to: selectedDate) else { return }
+            selectedDate = newDate
+            return
+        }
+        
+        let sorted = paycheckDates.sorted()
+        let currentStart = getStartOfPeriod(for: selectedDate)
+        
+        if let index = sorted.firstIndex(where: { Calendar.current.isDate($0, inSameDayAs: currentStart) }) {
+            let newIndex = index + value
+            if newIndex >= 0 && newIndex < sorted.count {
+                selectedDate = sorted[newIndex]
+            } else if newIndex >= sorted.count {
+                if let newDate = Calendar.current.date(byAdding: .month, value: 1, to: selectedDate) {
+                    selectedDate = newDate
+                }
+            } else if newIndex < 0 {
+                // Limit to oldest
+                return
             }
-            
-            return accumulatedBalance
         } else {
-            let pastTransactions = transactions.filter { txn in
-                let txnLabel = BudgetLogic.getPeriodLabel(for: txn.date, bumpToNextPeriod: isTransactionOnPayday(txn))
-                return txnLabel < targetLabel && !hiddenTransactionIDs.contains(txn.id)
+            // Fallback for when current selectedDate is in "Future" (not in paycheck list)
+            if let newDate = Calendar.current.date(byAdding: .month, value: value, to: selectedDate) {
+                selectedDate = newDate
             }
-            let pastSum = pastTransactions.reduce(0) { $0 + $1.decimalAmount }
-            return startingBalance + pastSum
+        }
+    }
+    
+    func deleteTransaction(_ transaction: SimpleFinTransaction) { hiddenTransactionIDs.insert(transaction.id); objectWillChange.send() }
+    
+    var periodHeaderTitle: String {
+        let start = getStartOfPeriod(for: selectedDate)
+        let current = getStartOfPeriod(for: Date())
+        if start > current { return "Future Period" }
+        if start < current { return "Past Period" }
+        return "Current Period"
+    }
+    
+    var monthlyNetBudget: Decimal { return getNetBudget(for: selectedDate) }
+    
+    func updateBudget(for category: String, amount: Decimal) {
+        // 1. Update the global default.
+        // This ensures any future period (that doesn't have a specific override yet) uses this new amount.
+        defaultCategoryBudgets[category] = amount
+        
+        // 2. Update the specific current period.
+        // This ensures the change appears immediately in the view you are currently looking at.
+        let periodFormatter = DateFormatter()
+        periodFormatter.dateFormat = "yyyy-MM-dd"
+        let key = periodFormatter.string(from: getStartOfPeriod(for: selectedDate))
+        
+        if periodBudgets[key] == nil { periodBudgets[key] = [:] }
+        periodBudgets[key]?[category] = amount
+        
+        objectWillChange.send()
+    }
+    
+    var currentPeriodKey: String {
+        let periodFormatter = DateFormatter()
+        periodFormatter.dateFormat = "yyyy-MM-dd"
+        return periodFormatter.string(from: getStartOfPeriod(for: selectedDate))
+    }
+    
+    var periodLabel: String {
+        let start = getStartOfPeriod(for: selectedDate)
+        let currentStart = getStartOfPeriod(for: Date())
+        let formatter = DateFormatter()
+        
+        // 1. FUTURE: Show Month & Year only (No specific day numbers)
+        if start > currentStart {
+            formatter.dateFormat = "MMMM yyyy"
+            return formatter.string(from: start)
+        }
+        
+        // 2. CURRENT: Show "Starting [Date]" only
+        if start == currentStart {
+            formatter.dateFormat = "MMM d"
+            return "Starting \(formatter.string(from: start))"
+        }
+        
+        // 3. PAST: Show full Date Range (e.g., "Jan 23 - Feb 22")
+        // Calculate the end date based on the NEXT paycheck or standard month
+        let end: Date
+        if let nextPaycheck = paycheckDates.sorted().first(where: { $0 > start }) {
+            end = Calendar.current.date(byAdding: .day, value: -1, to: nextPaycheck)!
+        } else {
+            end = Calendar.current.date(byAdding: .month, value: 1, to: start)!.addingTimeInterval(-86400)
+        }
+        
+        let startYear = Calendar.current.component(.year, from: start)
+        let endYear = Calendar.current.component(.year, from: end)
+        
+        if startYear == endYear {
+            formatter.dateFormat = "MMM d"
+            return "\(formatter.string(from: start)) - \(formatter.string(from: end))"
+        } else {
+            formatter.dateFormat = "MMM d ''yy"
+            return "\(formatter.string(from: start)) - \(formatter.string(from: end))"
+        }
+    }
+    
+    func setStartingBalance(_ amount: Decimal) { startingBalance = amount; UserDefaults.standard.set(NSDecimalNumber(decimal: amount).doubleValue, forKey: "StartingBalance") }
+    func addCategory(name: String, amount: Decimal) { defaultCategoryBudgets[name] = amount; if !categoryOrder.contains(name) { categoryOrder.append(name) } }
+    
+    var beginningBalance: Decimal {
+        let targetStart = getStartOfPeriod(for: selectedDate)
+        let now = Date()
+        let currentStart = getStartOfPeriod(for: now)
+        
+        if targetStart > currentStart {
+            // 1. Start with the projected ending balance of the ACTUAL current period.
+            // This accounts for the "Current Actual + Remaining Budget" logic you mentioned.
+            var accumulated = getProjectedEnd(for: now)
+            
+            // 2. Iterate through every month BETWEEN the current period and the selected future period.
+            // We start checking "Next Month".
+            var pointer = Calendar.current.date(byAdding: .month, value: 1, to: currentStart)!
+            
+            // While our pointer is still BEFORE the target month...
+            while getStartOfPeriod(for: pointer) < targetStart {
+                // ...add the Net Budget (Income - Expenses) for that intermediate month.
+                accumulated += getNetBudget(for: pointer)
+                
+                // Move pointer to the next month
+                pointer = Calendar.current.date(byAdding: .month, value: 1, to: pointer)!
+            }
+            
+            return accumulated
+        } else {
+            // Past Logic (Unchanged)
+            let past = transactions.filter {
+                !hiddenTransactionIDs.contains($0.id) && $0.date < targetStart
+            }
+            return startingBalance + past.reduce(0) { $0 + $1.decimalAmount }
         }
     }
     
     var endingBalance: Decimal {
-        let startOfPeriod = getStartOfPeriod(for: selectedDate)
-        let now = Date()
-        let currentPeriodStart = getStartOfPeriod(for: now)
-
-        if startOfPeriod > currentPeriodStart {
-            return beginningBalance + monthlyNetBudget
-        } else {
-            let currentTxns = getTransactionsForSelectedPeriod()
-            let currentSum = currentTxns.reduce(0) { $0 + $1.decimalAmount }
-            return beginningBalance + currentSum
-        }
-    }
-    
-    func getCurrentActualBalance() -> Decimal {
-        let activeTxns = transactions.filter { !hiddenTransactionIDs.contains($0.id) }
-        return startingBalance + activeTxns.filter { $0.date <= Date() }.reduce(0) { $0 + $1.decimalAmount }
+        if getStartOfPeriod(for: selectedDate) > getStartOfPeriod(for: Date()) { return beginningBalance + monthlyNetBudget }
+        return beginningBalance + currentPeriodTransactions.reduce(0) { $0 + $1.decimalAmount }
     }
     
     func getSpent(for category: String) -> Decimal {
-        let targetPeriod = currentPeriodKey
-        let filtered = transactions.filter { txn in
-            return !hiddenTransactionIDs.contains(txn.id) &&
-                   BudgetLogic.getPeriodLabel(for: txn.date, bumpToNextPeriod: isTransactionOnPayday(txn)) == targetPeriod &&
-                   self.getCategory(for: txn) == category
-        }
+        let filtered = currentPeriodTransactions.filter { getCategory(for: $0) == category }
         return abs(filtered.reduce(0) { $0 + $1.decimalAmount })
     }
     
     func getBudget(for category: String, on date: Date? = nil) -> Decimal {
-        let dateToUse = date ?? selectedDate
-        let periodKey = BudgetLogic.getPeriodLabel(for: dateToUse)
+        let d = date ?? selectedDate
+        let periodFormatter = DateFormatter()
+        periodFormatter.dateFormat = "yyyy-MM-dd"
+        let key = periodFormatter.string(from: getStartOfPeriod(for: d))
         
-        if let specific = periodBudgets[periodKey]?[category] {
-            return specific
-        }
+        if let val = periodBudgets[key]?[category] { return val }
         return defaultCategoryBudgets[category] ?? 0.0
     }
     
     func getFilteredTransactions() -> [SimpleFinTransaction] {
-        let allInPeriod = getTransactionsForSelectedPeriod()
-        guard let filter = selectedCategoryFilter, filter != "All" else { return allInPeriod }
-        return allInPeriod.filter { getCategory(for: $0) == filter }
+        guard let f = selectedCategoryFilter, f != "All" else { return currentPeriodTransactions }
+        return currentPeriodTransactions.filter { getCategory(for: $0) == f }
     }
     
     func getTransactionsForSelectedPeriod() -> [SimpleFinTransaction] {
-        let targetPeriod = currentPeriodKey
-        return transactions.filter {
-            !hiddenTransactionIDs.contains($0.id) &&
-            BudgetLogic.getPeriodLabel(for: $0.date, bumpToNextPeriod: isTransactionOnPayday($0)) == targetPeriod
-        }
+        return currentPeriodTransactions
+    }
+    
+    private var isSelectedPeriodFuture: Bool { getStartOfPeriod(for: selectedDate) > getStartOfPeriod(for: Date()) }
+    
+    func updateCategory(for transactionID: String, to newCategory: String) {
+        transactionCategoryOverrides[transactionID] = newCategory
+        objectWillChange.send()
+        updateCurrentPeriodCache()
     }
 }
