@@ -9,39 +9,37 @@ import Foundation
 
 class LunchMoneyService {
     
-    // TRIGGER PLAID SYNC
-    func triggerPlaidSync(apiKey: String) async throws {
-        // Endpoint to trigger Plaid fetch
-        let url = URL(string: "https://api.lunchmoney.dev/v2/plaid_accounts/fetch")!
-        
+    // 1. FETCH CATEGORIES
+    func fetchCategories(apiKey: String) async throws -> [LunchMoneyCategory] {
+        let url = URL(string: "https://api.lunchmoney.dev/v2/categories")!
         var request = URLRequest(url: url)
-        request.httpMethod = "POST"
+        request.httpMethod = "GET"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         
-        print("Triggering Plaid Sync: \(url)")
+        print("Fetching Categories: \(url)")
         
         let (data, response) = try await URLSession.shared.data(for: request)
         
-        // UPDATED: Accept both 200 (OK) and 202 (Accepted/Queued) as success
-        guard let httpResponse = response as? HTTPURLResponse,
-              (httpResponse.statusCode == 200 || httpResponse.statusCode == 202) else {
-             
-             // Try to decode error message if available
-             if let errorResponse = try? JSONDecoder().decode(LunchMoneyErrorResponse.self, from: data) {
-                 print("Plaid Sync Error: \(errorResponse.error ?? "Unknown")")
-                 // We still throw if it's not 200 or 202
-                 throw SimpleFinError.apiError((response as? HTTPURLResponse)?.statusCode ?? 0)
-             }
-             throw SimpleFinError.apiError((response as? HTTPURLResponse)?.statusCode ?? 0)
+        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+            throw SimpleFinError.apiError((response as? HTTPURLResponse)?.statusCode ?? 0)
         }
         
-        print("Plaid Sync Triggered Successfully (Status: \(httpResponse.statusCode))")
+        struct CategoriesRoot: Codable {
+            let categories: [LunchMoneyCategory]
+        }
+        
+        do {
+            let root = try JSONDecoder().decode(CategoriesRoot.self, from: data)
+            return root.categories
+        } catch {
+            print("Category Decoding Failed: \(error)")
+            return []
+        }
     }
     
-    // FETCH DATA FROM LUNCHMONEY V2 API
-    func fetchTransactions(apiKey: String, startDate: Date, endDate: Date = Date()) async throws -> ([SimpleFinTransaction], [String]) {
-        var components = URLComponents(string: "https://api.lunchmoney.dev/v2/transactions")!
-        
+    // 2. FETCH BUDGET SUMMARY (UPDATED: Returns Aligned Status)
+    func fetchBudgetSummary(apiKey: String, startDate: Date, endDate: Date) async throws -> (aligned: Bool, categories: [LunchMoneySummaryCategory]) {
+        var components = URLComponents(string: "https://api.lunchmoney.dev/v2/summary")!
         let dateFormatter = DateFormatter()
         dateFormatter.dateFormat = "yyyy-MM-dd"
         
@@ -51,12 +49,68 @@ class LunchMoneyService {
         ]
         
         guard let url = components.url else { throw URLError(.badURL) }
-        
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         
-        print("Fetching from: \(url)")
+        print("Fetching Summary: \(url)")
+        
+        let (data, response) = try await URLSession.shared.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+            throw SimpleFinError.apiError((response as? HTTPURLResponse)?.statusCode ?? 0)
+        }
+        
+        struct SummaryRoot: Codable {
+            let aligned: Bool
+            let categories: [LunchMoneySummaryCategory]?
+        }
+        
+        do {
+            let root = try JSONDecoder().decode(SummaryRoot.self, from: data)
+            return (root.aligned, root.categories ?? [])
+        } catch {
+            print("Summary Decoding Failed: \(error)")
+            return (false, [])
+        }
+    }
+    
+    // 3. TRIGGER PLAID SYNC
+    func triggerPlaidSync(apiKey: String) async throws {
+        let url = URL(string: "https://api.lunchmoney.dev/v2/plaid_accounts/fetch")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        
+        let (data, response) = try await URLSession.shared.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse,
+              (httpResponse.statusCode == 200 || httpResponse.statusCode == 202) else {
+             if let errorResponse = try? JSONDecoder().decode(LunchMoneyErrorResponse.self, from: data) {
+                 print("Plaid Sync Error: \(errorResponse.error ?? "Unknown")")
+                 throw SimpleFinError.apiError((response as? HTTPURLResponse)?.statusCode ?? 0)
+             }
+             throw SimpleFinError.apiError((response as? HTTPURLResponse)?.statusCode ?? 0)
+        }
+    }
+    
+    // 4. FETCH TRANSACTIONS
+    func fetchTransactions(apiKey: String, startDate: Date, endDate: Date = Date()) async throws -> ([SimpleFinTransaction], [String]) {
+        var components = URLComponents(string: "https://api.lunchmoney.dev/v2/transactions")!
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyy-MM-dd"
+        
+        components.queryItems = [
+            URLQueryItem(name: "start_date", value: dateFormatter.string(from: startDate)),
+            URLQueryItem(name: "end_date", value: dateFormatter.string(from: endDate))
+        ]
+        
+        guard let url = components.url else { throw URLError(.badURL) }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        
+        print("Fetching Transactions: \(url)")
         
         let (data, response) = try await URLSession.shared.data(for: request)
         
@@ -74,7 +128,7 @@ class LunchMoneyService {
         do {
             let root = try JSONDecoder().decode(LunchMoneyRoot.self, from: data)
             
-            // Map Raw transactions to App Model, INVERTING the amount
+            // Map Raw transactions to App Model
             let cleanTransactions = root.transactions.map { raw -> SimpleFinTransaction in
                 let originalAmount = Decimal(string: raw.amount) ?? 0.0
                 let invertedAmount = originalAmount * -1
@@ -86,33 +140,42 @@ class LunchMoneyService {
                     description: raw.notes ?? "",
                     payee: raw.payee ?? "",
                     memo: raw.notes ?? "",
-                    transacted_at: 0
+                    transacted_at: 0,
+                    categoryId: raw.category_id
                 ).updatingDate(raw.date)
             }
             
             return (cleanTransactions, [])
         } catch {
-            print("Decoding Failed: \(error)")
+            print("Transaction Decoding Failed: \(error)")
             throw SimpleFinError.decodingError(error.localizedDescription)
         }
     }
     
-    // Internal Helper Structs
     private struct LunchMoneyErrorResponse: Codable {
         let error: String?
     }
 }
 
-// Internal Struct to match LunchMoney JSON exactly
+// Internal Structs
+struct LunchMoneySummaryCategory: Codable {
+    let category_id: Int
+    let totals: LunchMoneySummaryTotals
+}
+
+struct LunchMoneySummaryTotals: Codable {
+    let budgeted: Double?
+}
+
 private struct LunchMoneyRawTransaction: Codable {
     let id: Int
     let date: String
     let amount: String
     let payee: String?
     let notes: String?
+    let category_id: Int?
 }
 
-// Extension to help set the date string on the model during mapping
 private extension SimpleFinTransaction {
     func updatingDate(_ dateString: String) -> SimpleFinTransaction {
         let formatter = DateFormatter()
@@ -126,7 +189,8 @@ private extension SimpleFinTransaction {
             description: self.memo ?? "",
             payee: self.payee ?? "",
             memo: self.memo ?? "",
-            transacted_at: dateObj.timeIntervalSince1970
+            transacted_at: dateObj.timeIntervalSince1970,
+            categoryId: self.categoryId
         )
     }
 }
