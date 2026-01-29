@@ -20,10 +20,15 @@ This app is designed to be a privacy-first, lightweight mobile interface for you
 
 ## 📱 Screenshots
 
-| Dashboard | Setup Screen | Transaction List |
+### App Views
+| Dashboard (Current) | Transaction List | Setup Screen |
 |:---:|:---:|:---:|
-| <img src="Screenshots/Dashboard.png" width="250"> | <img src="Screenshots/Setup.png" width="250"> | <img src="Screenshots/Transactions.png" width="250"> |
+| <img src="Screenshots/Dashboard.png" width="250"> | <img src="Screenshots/Transactions.png" width="250"> | <img src="Screenshots/Setup.png" width="250"> |
 
+### Budgeting Periods
+| Past Period | Future Period |
+|:---:|:---:|
+| <img src="Screenshots/Dashboard_past.png" width="250"> | <img src="Screenshots/Dashboard_future.png" width="250"> |
 ## ⚙️ Setup & Installation
 
 1.  **Prerequisites:**
