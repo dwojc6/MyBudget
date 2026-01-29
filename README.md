@@ -1,22 +1,22 @@
 # MyBudget
 
-A privacy-focused iOS budget tracker built with SwiftUI. Seamlessly syncs with the LunchMoney API to import transactions and trigger Plaid updates. Features emoji-based categorization, monthly budget tracking, and a clean, native interface. No external servers—your data connects directly from your device to LunchMoney.
+A privacy-focused iOS budget tracker built with SwiftUI. Seamlessly syncs with the Lunch Money API to import transactions and trigger Plaid updates. Features dynamic category syncing, monthly budget tracking, and a clean, native interface. No external servers—your data connects directly from your device to Lunch Money.
 
-# MyBudget - LunchMoney Companion App
+# MyBudget - Lunch Money Companion App
 
-A native iOS budget tracker built with SwiftUI that integrates directly with the [LunchMoney](https://lunchmoney.app/) API. 
+A native iOS budget tracker built with SwiftUI that integrates directly with the [Lunch Money](https://lunchmoney.app/) API. 
 
-This app is designed to be a privacy-first, lightweight mobile interface for your finances. It pulls your latest transactions, automatically categorizes them based on keywords, and helps you track your monthly spending goals with a clean, emoji-friendly dashboard.
+This app is designed to be a privacy-first, lightweight mobile interface for your finances. It pulls your latest transactions and categories directly from your Lunch Money account, ensuring your mobile view always matches your main budget.
 
 ## 🚀 Features
 
-* **Direct API Integration:** Connects directly to LunchMoney's v2 API. No intermediate servers or data collection.
-* **Plaid Sync Trigger:** The "Sync Now" button triggers a fresh fetch from Plaid via LunchMoney, ensuring your data is always up to date.
-* **Smart Categorization:** Automatically sorts common transactions into categories (Groceries, Utilities, Dining, etc.) using keyword matching.
-* **Transaction Cleaning:** Automatically strips clutter from bank descriptions (e.g., removes "CHECKCARD", "POS PURCHASE", and random ID numbers) for a cleaner view.
+* **Direct API Integration:** Connects directly to Lunch Money's v2 API. No intermediate servers or data collection.
+* **Dynamic Category Syncing:** Categories are imported directly from your Lunch Money settings. Any changes made to categories on the web are reflected in the app.
+* **Plaid Sync Trigger:** The "Sync Now" button triggers a fresh fetch from Plaid via Lunch Money, ensuring your data is always up to date.
+* **Smart Categorization:** Uses your existing Lunch Money categorization rules and history.
 * **Budget Progress:** Visual progress bars for every category to track spending vs. budget in real-time.
-* **Manual Entry:** Quickly add cash transactions or pending items manually.
-* **Privacy Focused:** Your API token is stored securely on your device and used only for direct network calls to LunchMoney.
+* **Local Manual Entry:** Quickly add cash transactions or pending items manually into the app.
+* **Privacy Focused:** Your API token is stored securely on your device and used only for direct network calls to Lunch Money.
 
 ## 📱 Screenshots
 
@@ -29,15 +29,16 @@ This app is designed to be a privacy-first, lightweight mobile interface for you
 | Past Period | Future Period |
 |:---:|:---:|
 | <img src="Screenshots/Dashboard_past.png" width="250"> | <img src="Screenshots/Dashboard_future.png" width="250"> |
+
 ## ⚙️ Setup & Installation
 
 1.  **Prerequisites:**
-    * A [LunchMoney](https://lunchmoney.app/) account.
+    * A [Lunch Money](https://lunchmoney.app/) account.
     * Xcode 16.0+ installed on your Mac.
     * iOS 18.0+ device or simulator.
 
 2.  **Get your API Token:**
-    * Log in to LunchMoney.
+    * Log in to Lunch Money.
     * Go to **Settings** > **Developers**.
     * Create or copy your **Access Token**.
 
@@ -51,15 +52,14 @@ This app is designed to be a privacy-first, lightweight mobile interface for you
     * Press **Cmd + R** to build and run.
 
 4.  **Initial Configuration:**
-    * On the first launch, you will be prompted to enter your **Current Bank Balance** (to establish a baseline) and your **LunchMoney Access Token**.
+    * On the first launch, you will be prompted to enter your **Current Bank Balance** (to establish a baseline) and your **Lunch Money Access Token**.
     * Select a "Start Date" to pull transactions from.
 
 ## 🧩 Customization
 
 ### Categories & Budgets
-The app comes with a standard set of emoji-coded categories (e.g., 💰 Paycheck, 🛒 Groceries, 🏠 Household). 
-* **To change budgets:** Tap on any category row in the dashboard to set a new monthly limit.
-* **To modify logic:** Check `BudgetModels.swift` to customize the keyword matching rules for your specific spending habits.
+Categories are no longer hardcoded! The app fetches your custom category list directly from Lunch Money. 
+* **To change budgets:** Tap on any category row in the dashboard to set a new monthly limit for that specific category. The app will persist these overrides.
 
 ### Transaction Cleaning
 The app uses Regex in `BudgetModels.swift` to clean up messy bank descriptions. You can modify the `uiName` property logic to filter out specific patterns relevant to your bank.
@@ -80,5 +80,5 @@ Distributed under the MIT License. See [License](LICENSE) for more information.
 
 ## 🙏 Acknowledgments
 
-* Thanks to [LunchMoney](https://lunchmoney.app/) for providing an excellent API for personal finance.
+* Thanks to [Lunch Money](https://lunchmoney.app/) for providing an excellent API for personal finance.
 * Built with ❤️ using SwiftUI.
