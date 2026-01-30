@@ -1,7 +1,3 @@
-# MyBudget
-
-A privacy-focused iOS budget tracker built with SwiftUI. Seamlessly syncs with the Lunch Money API to import transactions and trigger Plaid updates. Features dynamic category syncing, monthly budget tracking, and a clean, native interface. No external servers—your data connects directly from your device to Lunch Money.
-
 # MyBudget - Lunch Money Companion App
 
 A native iOS budget tracker built with SwiftUI that integrates directly with the [Lunch Money](https://lunchmoney.app/) API. 
