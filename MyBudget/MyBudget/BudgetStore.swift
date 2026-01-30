@@ -20,8 +20,6 @@ class BudgetStore: ObservableObject {
         
         var id: String { self.rawValue }
     }
-
-    // ... inside the class ...
     
     // 2. Add the state variable
     @Published var currentSortOption: SortOption = .totalSpending
@@ -85,7 +83,10 @@ class BudgetStore: ObservableObject {
     // Helper to safely save budgets and print errors if it fails
     private func saveBudgets() {
         do {
-            let encoded = try JSONEncoder().encode(defaultCategoryBudgets)
+            // Convert [String: Decimal] -> [String: String] for safe storage
+            let safeStorage = defaultCategoryBudgets.mapValues { "\($0)" }
+            
+            let encoded = try JSONEncoder().encode(safeStorage)
             UserDefaults.standard.set(encoded, forKey: "DefaultCategoryBudgets")
         } catch {
             print("❌ FAILED TO SAVE BUDGETS: \(error.localizedDescription)")
@@ -146,24 +147,34 @@ class BudgetStore: ObservableObject {
     private let service = LunchMoneyService()
     
     init() {
+        // 1. Load simple settings first
         self.accessUrl = UserDefaults.standard.string(forKey: "LunchMoneyToken")
         self.startingBalance = Decimal(UserDefaults.standard.double(forKey: "StartingBalance"))
         
         let savedDay = UserDefaults.standard.integer(forKey: "BudgetStartDay")
         self.budgetStartDay = savedDay > 0 ? savedDay : 1
         
-        if let min = UserDefaults.standard.object(forKey: "MinDate") as? Double { self.minDate = Date(timeIntervalSince1970: min) }
-        
-        if let savedCats = UserDefaults.standard.data(forKey: "SavedCategories"),
-           let decoded = try? JSONDecoder().decode([Int: LunchMoneyCategory].self, from: savedCats) {
-            self.categoriesMap = decoded
+        if let min = UserDefaults.standard.object(forKey: "MinDate") as? Double {
+            self.minDate = Date(timeIntervalSince1970: min)
+        }
+
+        // 2. CRITICAL FIX: Load Budgets BEFORE Categories
+        // This ensures that when categories load and trigger a refresh, the budgets are already there.
+        if let savedDefaults = UserDefaults.standard.data(forKey: "DefaultCategoryBudgets") {
+            // Try Safe String Format first
+            if let safeDecoded = try? JSONDecoder().decode([String: String].self, from: savedDefaults) {
+                self.defaultCategoryBudgets = safeDecoded.compactMapValues { Decimal(string: $0) }
+                print("✅ Successfully loaded budgets from Safe Storage.")
+            }
+            // Fallback to Old Decimal Format
+            else if let oldDecoded = try? JSONDecoder().decode([String: Decimal].self, from: savedDefaults) {
+                self.defaultCategoryBudgets = oldDecoded
+                print("⚠️ Loaded budgets from old format. Saving to new format now...")
+                self.saveBudgets()
+            }
         }
         
-        if let savedDefaults = UserDefaults.standard.data(forKey: "DefaultCategoryBudgets"),
-           let decoded = try? JSONDecoder().decode([String: Decimal].self, from: savedDefaults) {
-            self.defaultCategoryBudgets = decoded
-        }
-        
+        // 3. Load Order and Overrides
         if let savedOrder = UserDefaults.standard.array(forKey: "CategoryOrder") as? [String] {
             self.categoryOrder = savedOrder
         }
@@ -172,14 +183,24 @@ class BudgetStore: ObservableObject {
             self.transactionCategoryOverrides = savedOverrides
         }
         
-        self.refreshCategoryList()
+        // 4. NOW Load Categories (Triggers refreshCategoryList)
+        // Since budgets are already loaded (Step 2), this will now MATCH them instead of overwriting them with 0.0
+        if let savedCats = UserDefaults.standard.data(forKey: "SavedCategories"),
+           let decoded = try? JSONDecoder().decode([Int: LunchMoneyCategory].self, from: savedCats) {
+            self.categoriesMap = decoded
+        } else {
+            // Only run refresh manually if we didn't load categories (which would have auto-triggered it)
+            self.refreshCategoryList()
+        }
         
+        // 5. Load Transactions
         if let savedData = UserDefaults.standard.data(forKey: "SavedTransactions"),
            let decoded = try? JSONDecoder().decode([SimpleFinTransaction].self, from: savedData) {
             self.transactions = decoded
             self.updatePaycheckDates()
         }
         
+        // 6. Load Other Settings
         if let savedHidden = UserDefaults.standard.array(forKey: "HiddenTxns") as? [String] {
             self.hiddenTransactionIDs = Set(savedHidden)
         }
@@ -191,7 +212,7 @@ class BudgetStore: ObservableObject {
         
         self.updateCurrentPeriodCache()
     }
-    
+
     private func updateCurrentPeriodCache() {
         let periodStart = getStartOfPeriod(for: selectedDate)
         
@@ -207,15 +228,17 @@ class BudgetStore: ObservableObject {
             return txn.date >= periodStart && txn.date < periodEnd
         }
     }
-    
+
     private func refreshCategoryList() {
         var newBudgets = self.defaultCategoryBudgets
         var newOrder = self.categoryOrder
         
         for category in categoriesMap.values {
             if newBudgets[category.name] == nil {
+                print("⚠️ Missing budget for \(category.name), initializing to 0.0")
                 newBudgets[category.name] = 0.0
             }
+            
             if !newOrder.contains(category.name) {
                 newOrder.append(category.name)
             }
@@ -224,8 +247,13 @@ class BudgetStore: ObservableObject {
         if newBudgets["Uncategorized"] == nil { newBudgets["Uncategorized"] = 0.0 }
         if !newOrder.contains("Uncategorized") { newOrder.append("Uncategorized") }
         
-        self.defaultCategoryBudgets = newBudgets
-        self.categoryOrder = newOrder
+        // Only update if changes were actually made to avoid unnecessary saves
+        if newBudgets != self.defaultCategoryBudgets {
+            self.defaultCategoryBudgets = newBudgets
+        }
+        if newOrder != self.categoryOrder {
+            self.categoryOrder = newOrder
+        }
     }
     
     func syncTransactions(startDate: Date? = nil, specificPeriodStart: Date? = nil, specificPeriodEnd: Date? = nil) async -> (String, Bool) {
@@ -259,12 +287,14 @@ class BudgetStore: ObservableObject {
             
             let (aligned, summaryCategories) = try await service.fetchBudgetSummary(apiKey: token, startDate: summaryStart, endDate: summaryEnd)
             
-            // UPDATED: Only overwrite budgets if the API returned an aligned response
             if aligned {
                 var updatedDefaults = self.defaultCategoryBudgets
                 for item in summaryCategories {
                     if let catName = newMap[item.category_id]?.name, let amount = item.totals.budgeted {
-                        updatedDefaults[catName] = Decimal(amount)
+                        let cleanAmountString = String(format: "%.2f", amount)
+                        if let cleanDecimal = Decimal(string: cleanAmountString) {
+                            updatedDefaults[catName] = cleanDecimal
+                        }
                     }
                 }
                 await MainActor.run { self.defaultCategoryBudgets = updatedDefaults }
@@ -276,10 +306,8 @@ class BudgetStore: ObservableObject {
                 try await service.triggerPlaidSync(apiKey: token)
             } catch {
                 print("⚠️ Plaid Sync Skipped: \(error.localizedDescription)")
-                // We intentionally catch and ignore the error so the rest of the sync proceeds
             }
             
-            // Keep the sleep to ensure backend consistency if a sync DID happen
             try await Task.sleep(nanoseconds: 1 * 1_000_000_000)
             
             let fetchDate = startDate ?? Calendar.current.date(byAdding: .day, value: -7, to: Date())!
@@ -314,7 +342,7 @@ class BudgetStore: ObservableObject {
             let (aligned, _) = try await service.fetchBudgetSummary(apiKey: token, startDate: periodStart, endDate: periodEnd)
             
             if !aligned {
-                self.errorMessage = "Aligned: False. The dates selected do not match a valid LunchMoney budgeting period. Please adjust the Start/End dates."
+                self.errorMessage = "The dates selected do not match a valid LunchMoney budgeting period. Please adjust the Start/End dates."
                 self.showErrorAlert = true
                 self.isSyncing = false
                 return
