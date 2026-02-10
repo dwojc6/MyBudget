@@ -13,10 +13,15 @@ struct AddTransactionView: View {
     
     @State private var payee: String = ""
     @State private var amountString: String = ""
-    @State private var category: String = "Uncategorized"
+    @State private var category: String = ""
     @State private var date: Date = Date()
     @State private var notes: String = ""
     @State private var isExpense: Bool = true // NEW: Track transaction type
+
+    private var availableCategories: [String] {
+        let filtered = store.categoryNames.filter { $0 != "Uncategorized" }
+        return filtered.isEmpty ? ["Uncategorized"] : filtered
+    }
     
     var body: some View {
         NavigationView {
@@ -41,8 +46,8 @@ struct AddTransactionView: View {
                 
                 Section(header: Text("Category")) {
                     Picker("Category", selection: $category) {
-                        ForEach(store.categoryNames, id: \.self) { name in
-                            Text(name).tag(name)
+                        ForEach(availableCategories, id: \.self) { name in
+                            Text(name.displayWithoutEmoji).tag(name)
                         }
                     }
                 }
@@ -65,6 +70,11 @@ struct AddTransactionView: View {
             }
             .navigationTitle("Add Transaction")
             .navigationBarItems(trailing: Button("Cancel") { presentationMode.wrappedValue.dismiss() })
+            .onAppear {
+                if !availableCategories.contains(category) {
+                    category = availableCategories.first ?? "Uncategorized"
+                }
+            }
         }
     }
 }
@@ -97,15 +107,68 @@ struct EditBalanceView: View {
 }
 
 struct EditTransactionView: View {
-    @ObservedObject var store: BudgetStore; let transaction: SimpleFinTransaction; @Environment(\.presentationMode) var presentationMode; @State private var selectedCategory: String = ""
+    @ObservedObject var store: BudgetStore
+    let transaction: SimpleFinTransaction
+    @Environment(\.presentationMode) var presentationMode
+    @State private var selectedCategory: String = ""
+    @State private var editedPayee: String = ""
+    @State private var isSaving = false
+    @State private var showPayeeErrorAlert = false
+    @State private var payeeErrorMessage = ""
+
     var body: some View {
         NavigationView {
             Form {
-                Section(header: Text("Transaction Details")) { Text(transaction.uiName).font(.headline); Text(formatCurrency(transaction.decimalAmount)) }
-                Section(header: Text("Change Category")) { Picker("Category", selection: $selectedCategory) { ForEach(store.categoryNames, id: \.self) { name in Text(name).tag(name) } }.pickerStyle(.wheel) }
-                Button("Save Changes") { store.updateCategory(for: transaction.id, to: selectedCategory); presentationMode.wrappedValue.dismiss() }.frame(maxWidth: .infinity, alignment: .center).foregroundColor(.blue)
+                Section(header: Text("Transaction Details")) {
+                    Text(transaction.uiName).font(.headline)
+                    Text(formatCurrency(transaction.decimalAmount))
+                }
+
+                Section(header: Text("Payee")) {
+                    TextField("Payee", text: $editedPayee)
+                        .textInputAutocapitalization(.words)
+                }
+
+                Section(header: Text("Change Category")) {
+                    Picker("Category", selection: $selectedCategory) {
+                        ForEach(store.categoryNames, id: \.self) { name in
+                            Text(name.displayWithoutEmoji).tag(name)
+                        }
+                    }
+                    .pickerStyle(.wheel)
+                }
+
+                Button(isSaving ? "Saving..." : "Save Changes") {
+                    isSaving = true
+                    let newCategory = selectedCategory
+                    let newPayee = editedPayee
+                    Task {
+                        store.updateCategory(for: transaction.id, to: newCategory)
+                        let (success, errorMessage) = await store.updateTransactionPayee(for: transaction.id, to: newPayee)
+                        isSaving = false
+                        if success {
+                            presentationMode.wrappedValue.dismiss()
+                        } else {
+                            payeeErrorMessage = errorMessage ?? "Unable to update payee."
+                            showPayeeErrorAlert = true
+                        }
+                    }
+                }
+                .disabled(isSaving)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .foregroundColor(.blue)
             }
-            .navigationTitle("Edit Transaction").navigationBarItems(trailing: Button("Cancel") { presentationMode.wrappedValue.dismiss() }).onAppear { selectedCategory = store.getCategory(for: transaction) }
+            .navigationTitle("Edit Transaction")
+            .navigationBarItems(trailing: Button("Cancel") { presentationMode.wrappedValue.dismiss() })
+            .onAppear {
+                selectedCategory = store.getCategory(for: transaction)
+                editedPayee = transaction.payee ?? transaction.uiName
+            }
+            .alert("Update Failed", isPresented: $showPayeeErrorAlert) {
+                Button("OK", role: .cancel) { }
+            } message: {
+                Text(payeeErrorMessage)
+            }
         }
     }
 }

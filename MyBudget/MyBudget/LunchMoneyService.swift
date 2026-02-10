@@ -151,9 +151,45 @@ class LunchMoneyService {
             throw SimpleFinError.decodingError(error.localizedDescription)
         }
     }
+
+    // 5. UPDATE TRANSACTION PAYEE
+    func updateTransactionPayee(apiKey: String, transactionId: String, payee: String) async throws {
+        let url = URL(string: "https://api.lunchmoney.dev/v2/transactions/\(transactionId)")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "PUT"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let body: [String: Any] = [
+            "payee": payee
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body, options: [])
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200...299).contains(httpResponse.statusCode) else {
+            if let errorMessage = parseLunchMoneyError(from: data) {
+                throw SimpleFinError.decodingError(errorMessage)
+            }
+            throw SimpleFinError.apiError((response as? HTTPURLResponse)?.statusCode ?? 0)
+        }
+    }
     
     private struct LunchMoneyErrorResponse: Codable {
         let error: String?
+    }
+
+    private func parseLunchMoneyError(from data: Data) -> String? {
+        if let errorResponse = try? JSONDecoder().decode(LunchMoneyErrorResponse.self, from: data),
+           let error = errorResponse.error {
+            return error
+        }
+        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            if let error = json["error"] as? String { return error }
+            if let errors = json["error"] as? [String] { return errors.joined(separator: ", ") }
+        }
+        return nil
     }
 }
 

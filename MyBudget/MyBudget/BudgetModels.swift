@@ -47,6 +47,15 @@ struct SimpleFinTransaction: Codable, Identifiable {
         self.memo = try? container.decode(String.self, forKey: .memo)
         self.categoryId = try? container.decode(Int.self, forKey: .categoryId)
     }
+
+    init(id: String, dateString: String, amount: String?, payee: String?, memo: String?, categoryId: Int?) {
+        self.id = id
+        self.dateString = dateString
+        self.amount = amount
+        self.payee = payee
+        self.memo = memo
+        self.categoryId = categoryId
+    }
     
     init(id: String, posted: TimeInterval, amount: String, description: String, payee: String, memo: String, transacted_at: TimeInterval, categoryId: Int? = nil) {
         self.id = id
@@ -80,4 +89,17 @@ struct SimpleFinTransaction: Codable, Identifiable {
     }
     
     var cleanedDescription: String { return memo ?? "" }
+}
+
+extension SimpleFinTransaction {
+    func withPayee(_ newPayee: String) -> SimpleFinTransaction {
+        return SimpleFinTransaction(
+            id: id,
+            dateString: dateString,
+            amount: amount,
+            payee: newPayee,
+            memo: memo,
+            categoryId: categoryId
+        )
+    }
 }

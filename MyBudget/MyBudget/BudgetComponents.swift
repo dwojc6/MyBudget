@@ -32,6 +32,10 @@ struct CategoryProgressRow: View {
     var totalSpent: Decimal = 0.0
     var customColor: Color? = nil
     var isIncome: Bool = false
+
+    private var isSavingsCategory: Bool {
+        return name.localizedCaseInsensitiveContains("savings")
+    }
     
     private var progress: Double {
         return Double(truncating: (budget > 0 ? spent / budget : 0) as NSNumber)
@@ -48,47 +52,47 @@ struct CategoryProgressRow: View {
     
     // UPDATED: Check for emoji strings
     private var statusLabel: String {
-        if name == "🤑 Savings" { return "saved" }
+        if isSavingsCategory { return "saved" }
         if isIncome { return "deposited" }
         return "spent"
     }
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text(name).font(.system(size: 16, weight: .medium))
+                Text(name).font(.system(size: 18, weight: .semibold))
                 Spacer()
                 
                 if isIncome {
                     if spent > budget {
                         Text("\(formatCurrency(spent - budget)) Extra")
-                            .font(.system(size: 14)).foregroundColor(.green)
+                            .font(.system(size: 15, weight: .medium)).foregroundColor(.green)
                     } else {
                         Text("\(formatCurrency(budget - spent)) left")
-                            .font(.system(size: 14)).foregroundColor(.gray)
+                            .font(.system(size: 15, weight: .medium)).foregroundColor(.gray)
                     }
                 } else {
                     if spent > budget {
                         Text("\(formatCurrency(spent - budget)) Overspent")
-                            .font(.system(size: 14)).foregroundColor(.red)
+                            .font(.system(size: 15, weight: .medium)).foregroundColor(.red)
                     } else {
                         Text("\(formatCurrency(budget - spent)) left")
-                            .font(.system(size: 14)).foregroundColor(.gray)
+                            .font(.system(size: 15, weight: .medium)).foregroundColor(.gray)
                     }
                 }
             }
             
             GeometryReader { geometry in
                 ZStack(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: 5).frame(height: 8).foregroundColor(Color.gray.opacity(0.2))
+                    RoundedRectangle(cornerRadius: 6).frame(height: 10).foregroundColor(Color.gray.opacity(0.2))
                     
                     let barWidth = min(CGFloat(progress) * geometry.size.width, geometry.size.width)
                     
                     RoundedRectangle(cornerRadius: 5)
-                        .frame(width: barWidth, height: 8)
+                        .frame(width: barWidth, height: 10)
                         .foregroundColor(barColor)
                 }
-            }.frame(height: 8)
+            }.frame(height: 10)
             
             HStack {
                 // UPDATED: Check for emoji strings
@@ -97,17 +101,21 @@ struct CategoryProgressRow: View {
                     Text(statusLabel)
                     
                     // Only show % for actual expenses (not income/savings)
-                    if !isIncome && totalSpent > 0 && name != "🤑 Savings" {
+                    if !isIncome && totalSpent > 0 && !isSavingsCategory {
                         let pct = (spent / totalSpent) * 100
                         Text("(\(String(format: "%.0f", NSDecimalNumber(decimal: pct).doubleValue))%)")
                     }
                 }
-                .font(.caption).foregroundColor(.gray)
+                .font(.system(size: 13, weight: .medium)).foregroundColor(.gray)
                 
                 Spacer()
-                Text("of \(formatCurrency(budget))").font(.caption).foregroundColor(.gray)
+                Text("of \(formatCurrency(budget))").font(.system(size: 13, weight: .medium)).foregroundColor(.gray)
             }
-        }.padding().background(Color(UIColor.secondarySystemGroupedBackground)).cornerRadius(12)
+        }
+        .padding(20)
+        .frame(minHeight: 104)
+        .background(Color(UIColor.secondarySystemGroupedBackground))
+        .cornerRadius(14)
     }
 }
 
@@ -116,14 +124,79 @@ struct TransactionRow: View {
     private var dateString: String { let formatter = DateFormatter(); formatter.dateFormat = "MMM d, yyyy"; return formatter.string(from: transaction.date) }
     var body: some View {
         HStack {
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(dateString).font(.caption2).bold().foregroundColor(.gray)
-                Text(transaction.uiName).font(.system(size: 14, weight: .medium)).lineLimit(1)
-                Text(transaction.cleanedDescription).font(.caption2).foregroundColor(.gray).lineLimit(1)
-                Text(category).font(.caption).foregroundColor(.blue)
+                Text(titleCasePreservingAcronyms(transaction.uiName.displayWithoutEmoji)).font(.system(size: 14, weight: .medium)).lineLimit(1)
+                Text(titleCasePreservingAcronyms(transaction.cleanedDescription.displayWithoutEmoji)).font(.caption2).foregroundColor(.gray).lineLimit(1)
+                Text(titleCasePreservingAcronyms(category.displayWithoutEmoji)).font(.caption).foregroundColor(.blue)
             }
             Spacer()
             Text(formatCurrency(transaction.decimalAmount)).font(.system(size: 14, weight: .bold)).foregroundColor(transaction.decimalAmount < 0 ? .red : .green)
-        }.padding().background(Color(UIColor.secondarySystemGroupedBackground)).cornerRadius(10)
+        }
+        .padding(.vertical, 8)
+        .padding(.horizontal, 12)
+        .background(Color(UIColor.secondarySystemGroupedBackground))
+        .cornerRadius(10)
     }
+}
+
+private func titleCasePreservingAcronyms(_ text: String) -> String {
+    let tokens = text.split(whereSeparator: { $0.isWhitespace })
+    let transformed = tokens.map { token in
+        return transformTokenPreservingAcronyms(String(token))
+    }
+    return transformed.joined(separator: " ")
+}
+
+private func transformTokenPreservingAcronyms(_ token: String) -> String {
+    var result = ""
+    var current = ""
+    var currentIsWord = false
+
+    func flush() {
+        guard !current.isEmpty else { return }
+        if currentIsWord {
+            result.append(transformWordSegment(current))
+        } else {
+            result.append(current)
+        }
+        current = ""
+    }
+
+    for ch in token {
+        let isWord = ch.isLetter || ch.isNumber
+        if current.isEmpty {
+            currentIsWord = isWord
+            current.append(ch)
+        } else if isWord == currentIsWord {
+            current.append(ch)
+        } else {
+            flush()
+            currentIsWord = isWord
+            current.append(ch)
+        }
+    }
+    flush()
+    return result
+}
+
+private func transformWordSegment(_ segment: String) -> String {
+    let letters = segment.filter { $0.isLetter }
+    let isAllCaps = segment == segment.uppercased()
+    let hasDigits = segment.rangeOfCharacter(from: .decimalDigits) != nil
+    let knownAcronyms: Set<String> = [
+        "ATM", "ACH", "LLC", "INC", "IRS", "POS", "PPD", "WEB", "ID", "CO",
+        "DES", "INDN", "DBA", "SSN", "FBO", "P2P", "USA", "US"
+    ]
+
+    if !letters.isEmpty && isAllCaps {
+        if hasDigits { return segment }
+        if letters.count <= 3 { return segment }
+        if knownAcronyms.contains(segment) { return segment }
+    }
+
+    let lower = segment.lowercased()
+    guard let first = lower.first else { return lower }
+    if !first.isLetter { return lower }
+    return String(first).uppercased() + lower.dropFirst()
 }

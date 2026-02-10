@@ -39,7 +39,8 @@ struct DashboardView: View {
                 .background(Color(UIColor.systemBackground)).shadow(radius: 1).zIndex(1)
                 
                 // MAIN LIST
-                List {
+                ZStack(alignment: .bottomTrailing) {
+                    List {
                     // 1. DASHBOARD SUMMARY & CATEGORIES
                     Group {
                         // 2x2 Grid
@@ -121,20 +122,19 @@ struct DashboardView: View {
                                     editBudgetAmount = formatter.string(from: current as NSDecimalNumber) ?? "\(current)"
                                     showEditBudgetAlert = true
                                 }) {
-                                    CategoryProgressRow(
-                                        name: category,
-                                        spent: spent,
-                                        budget: store.getBudget(for: category),
-                                        totalSpent: store.currentPeriodSpent,
-                                        // UPDATED: Check against emoji string
-                                        customColor: category == "🤑 Savings" ? .purple : nil,
-                                        // UPDATED: Check against emoji strings
-                                        isIncome: (category == "💵 Income" || category == "💰 Paycheck")
-                                    )
+                                        CategoryProgressRow(
+                                            name: category,
+                                            spent: spent,
+                                            budget: store.getBudget(for: category),
+                                            totalSpent: store.currentPeriodSpent,
+                                            customColor: category.localizedCaseInsensitiveContains("savings") ? .purple : nil,
+                                            // UPDATED: Check against emoji strings
+                                            isIncome: (category == "💵 Income" || category == "💰 Paycheck")
+                                        )
                                 }
                                 .buttonStyle(PlainButtonStyle())
                                 .listRowSeparator(.hidden)
-                                .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
+                                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
                                 .listRowBackground(Color.clear)
                             }
                         }
@@ -162,13 +162,16 @@ struct DashboardView: View {
                                 Menu {
                                     Button("All Categories") { store.selectedCategoryFilter = nil }
                                     Divider()
-                                    ForEach(store.categoryNames, id: \.self) { cat in
-                                        Button(cat) { store.selectedCategoryFilter = cat }
+                                    let sortedCategories = store.categoryNames.sorted {
+                                        $0.displayWithoutEmoji.localizedCaseInsensitiveCompare($1.displayWithoutEmoji) == .orderedAscending
+                                    }
+                                    ForEach(sortedCategories, id: \.self) { cat in
+                                        Button(cat.displayWithoutEmoji) { store.selectedCategoryFilter = cat }
                                     }
                                 } label: {
                                     HStack {
                                         Image(systemName: store.selectedCategoryFilter == nil ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
-                                        Text(store.selectedCategoryFilter ?? "All")
+                                        Text((store.selectedCategoryFilter ?? "All").displayWithoutEmoji)
                                             .font(.caption)
                                     }
                                     .padding(6)
@@ -258,10 +261,23 @@ struct DashboardView: View {
                             .listRowBackground(Color.clear)
                             .listRowSeparator(.hidden)
                     }
+                    }
+                    .listStyle(.plain)
+                    .background(Color(UIColor.systemGroupedBackground))
+                    .environment(\.editMode, $editMode)
+                    
+                    Button(action: { showAddTransaction = true }) {
+                        Image(systemName: "plus")
+                            .font(.system(size: 18, weight: .bold))
+                            .foregroundColor(.white)
+                            .frame(width: 52, height: 52)
+                            .background(Color.blue)
+                            .clipShape(Circle())
+                            .shadow(color: Color.black.opacity(0.2), radius: 6, x: 0, y: 3)
+                    }
+                    .padding(.trailing, 20)
+                    .padding(.bottom, 20)
                 }
-                .listStyle(.plain)
-                .background(Color(UIColor.systemGroupedBackground))
-                .environment(\.editMode, $editMode)
             }
             .navigationBarHidden(true)
             .sheet(item: $selectedTransaction) { t in EditTransactionView(store: store, transaction: t) }
