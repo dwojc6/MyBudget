@@ -43,8 +43,8 @@ struct LunchMoneySetupView: View {
                     TextField("Access Token", text: $apiToken).disableAutocorrection(true)
                 }
                 
-                Section(header: Text("Current Budget Period")) {
-                    Text("Select the dates for your CURRENT budgeting period. This must match Lunch Money exactly.")
+                Section(header: Text("Lunch Money Month Check")) {
+                    Text("Lunch Money should be configured to Calendar Month. Pick start/end dates in the same month so the app can validate the connection. App periods still run by paycheck.")
                         .font(.caption).foregroundColor(.gray)
                     DatePicker("Period Start", selection: $budgetStartDate, displayedComponents: .date)
                     DatePicker("Period End", selection: $budgetEndDate, displayedComponents: .date)

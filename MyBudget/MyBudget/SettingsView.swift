@@ -9,12 +9,12 @@ import SwiftUI
 
 struct SettingsView: View {
     @AppStorage("appearanceMode") private var appearanceMode = AppearanceMode.system.rawValue
-    @AppStorage("Notifications.BudgetAlertsEnabled") private var budgetAlertsEnabled = false
-    @AppStorage("Notifications.DailyBalanceEnabled") private var dailyBalanceEnabled = false
-    @AppStorage("Notifications.WeeklySummaryEnabled") private var weeklySummaryEnabled = false
-
     @ObservedObject var store: BudgetStore
 
+    private var appVersionDisplay: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "x.x.x"
+    }
+    
     var body: some View {
         NavigationView {
             List {
@@ -31,97 +31,81 @@ struct SettingsView: View {
                     .listRowBackground(Color.clear)
                 }
 
-                Section(header: Text("Notifications")) {
-                    notificationRow(
-                        title: "Budget Alerts",
-                        description: "Get notified when a budgeted amount reaches 80%.",
-                        isOn: $budgetAlertsEnabled
-                    ) {
-                        Task {
-                            let granted = await NotificationManager.shared.requestAuthorizationIfNeeded()
-                            if granted {
-                                store.evaluateBudgetAlerts()
-                            }
+                Section(header: Text("Account")) {
+                    if store.isLoadingAccountProfile && store.accountProfile == nil {
+                        HStack {
+                            ProgressView()
+                            Text("Loading account details...")
+                                .font(.subheadline)
+                                .foregroundColor(.gray)
                         }
-                    }
-
-                    notificationRow(
-                        title: "Daily Balance",
-                        description: "Receive a daily notification at 9:00 AM with the current period ending balance.",
-                        isOn: $dailyBalanceEnabled
-                    ) {
-                        Task {
-                            let granted = await NotificationManager.shared.requestAuthorizationIfNeeded()
-                            if granted {
-                                await NotificationManager.shared.scheduleDailyBalanceNotification(balance: store.endingBalance(for: Date()))
-                            }
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color(UIColor.secondarySystemGroupedBackground))
+                        .cornerRadius(12)
+                        .listRowSeparator(.hidden)
+                        .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
+                        .listRowBackground(Color.clear)
+                    } else if let profile = store.accountProfile {
+                        accountDetailsCard(
+                            name: profile.name ?? "Unavailable",
+                            email: profile.email ?? "Unavailable",
+                            budgetName: profile.budgetName ?? "Unavailable"
+                        )
+                    } else if let error = store.accountProfileError {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Unable to load account details.")
+                                .font(.subheadline)
+                                .foregroundColor(.red)
+                            Text(error)
+                                .font(.caption)
+                                .foregroundColor(.gray)
                         }
-                    } offAction: {
-                        Task { await NotificationManager.shared.cancelDailyBalanceNotification() }
-                    }
-
-                    notificationRow(
-                        title: "Weekly Summary",
-                        description: "Receive a weekly notification on Sunday at 9:00 PM with total income and expenses for the current week.",
-                        isOn: $weeklySummaryEnabled
-                    ) {
-                        Task {
-                            let granted = await NotificationManager.shared.requestAuthorizationIfNeeded()
-                            if granted {
-                                let interval = store.currentWeekInterval()
-                                let totals = store.totals(in: interval)
-                                await NotificationManager.shared.scheduleWeeklySummaryNotification(
-                                    income: totals.income,
-                                    expenses: totals.expenses
-                                )
-                            }
-                        }
-                    } offAction: {
-                        Task { await NotificationManager.shared.cancelWeeklySummaryNotification() }
-                    }
-                }
-            }
-            .listStyle(.plain)
-            .background(Color(UIColor.systemGroupedBackground))
-            .navigationTitle("Settings")
-            .onAppear {
-                Task {
-                    if dailyBalanceEnabled {
-                        await NotificationManager.shared.scheduleDailyBalanceNotification(balance: store.endingBalance(for: Date()))
-                    }
-                    if weeklySummaryEnabled {
-                        let interval = store.currentWeekInterval()
-                        let totals = store.totals(in: interval)
-                        await NotificationManager.shared.scheduleWeeklySummaryNotification(
-                            income: totals.income,
-                            expenses: totals.expenses
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color(UIColor.secondarySystemGroupedBackground))
+                        .cornerRadius(12)
+                        .listRowSeparator(.hidden)
+                        .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
+                        .listRowBackground(Color.clear)
+                    } else {
+                        accountDetailsCard(
+                            name: "Unavailable",
+                            email: "Unavailable",
+                            budgetName: "Unavailable"
                         )
                     }
                 }
+                
+            }
+            .listStyle(.plain)
+            .background(Color(UIColor.systemGroupedBackground))
+            .safeAreaInset(edge: .bottom) {
+                VStack(spacing: 2) {
+                    Text("Made by David Wojcik")
+                        .font(.footnote)
+                        .foregroundColor(.gray)
+                    Text("Version \(appVersionDisplay)")
+                        .font(.footnote)
+                        .foregroundColor(.gray)
+                }
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.vertical, 8)
+                .background(Color(UIColor.systemGroupedBackground))
+            }
+            .navigationTitle("Settings")
+            .task {
+                await store.refreshAccountProfile()
             }
         }
     }
 }
 
-private func notificationRow(
-    title: String,
-    description: String,
-    isOn: Binding<Bool>,
-    onAction: @escaping () -> Void,
-    offAction: (() -> Void)? = nil
-) -> some View {
-    VStack(alignment: .leading, spacing: 8) {
-        Toggle(title, isOn: isOn)
-            .onChange(of: isOn.wrappedValue) { newValue in
-                if newValue {
-                    onAction()
-                } else {
-                    offAction?()
-                }
-            }
-        Text(description)
-            .font(.caption)
-            .foregroundColor(.gray)
+private func accountDetailsCard(name: String, email: String, budgetName: String) -> some View {
+    VStack(spacing: 10) {
+        accountLine(title: "Name", value: name)
+        accountLine(title: "Email", value: email)
+        accountLine(title: "Budget", value: budgetName)
     }
     .padding(12)
     .frame(maxWidth: .infinity, alignment: .leading)
@@ -130,4 +114,16 @@ private func notificationRow(
     .listRowSeparator(.hidden)
     .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
     .listRowBackground(Color.clear)
+}
+
+private func accountLine(title: String, value: String) -> some View {
+    HStack(alignment: .top) {
+        Text(title)
+            .font(.subheadline)
+            .foregroundColor(.gray)
+        Spacer()
+        Text(value)
+            .font(.subheadline)
+            .multilineTextAlignment(.trailing)
+    }
 }

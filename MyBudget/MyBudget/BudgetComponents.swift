@@ -60,24 +60,24 @@ struct CategoryProgressRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text(name).font(.system(size: 18, weight: .semibold))
+                Text(name).font(.system(size: 16, weight: .semibold))
                 Spacer()
                 
                 if isIncome {
                     if spent > budget {
                         Text("\(formatCurrency(spent - budget)) Extra")
-                            .font(.system(size: 15, weight: .medium)).foregroundColor(.green)
+                            .font(.system(size: 14, weight: .medium)).foregroundColor(.green)
                     } else {
                         Text("\(formatCurrency(budget - spent)) left")
-                            .font(.system(size: 15, weight: .medium)).foregroundColor(.gray)
+                            .font(.system(size: 14, weight: .medium)).foregroundColor(.gray)
                     }
                 } else {
                     if spent > budget {
                         Text("\(formatCurrency(spent - budget)) Overspent")
-                            .font(.system(size: 15, weight: .medium)).foregroundColor(.red)
+                            .font(.system(size: 14, weight: .medium)).foregroundColor(.red)
                     } else {
                         Text("\(formatCurrency(budget - spent)) left")
-                            .font(.system(size: 15, weight: .medium)).foregroundColor(.gray)
+                            .font(.system(size: 14, weight: .medium)).foregroundColor(.gray)
                     }
                 }
             }
@@ -106,10 +106,10 @@ struct CategoryProgressRow: View {
                         Text("(\(String(format: "%.0f", NSDecimalNumber(decimal: pct).doubleValue))%)")
                     }
                 }
-                .font(.system(size: 13, weight: .medium)).foregroundColor(.gray)
+                .font(.system(size: 12, weight: .medium)).foregroundColor(.gray)
                 
                 Spacer()
-                Text("of \(formatCurrency(budget))").font(.system(size: 13, weight: .medium)).foregroundColor(.gray)
+                Text("of \(formatCurrency(budget))").font(.system(size: 12, weight: .medium)).foregroundColor(.gray)
             }
         }
         .padding(20)
