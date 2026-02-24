@@ -102,6 +102,15 @@ class BudgetStore: ObservableObject {
     }
     
     private var paycheckDates: [Date] = []
+    private var lastConfirmedPaycheckDate: Date? {
+        didSet {
+            if let date = lastConfirmedPaycheckDate {
+                UserDefaults.standard.set(date.timeIntervalSince1970, forKey: "LastConfirmedPaycheckDate")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "LastConfirmedPaycheckDate")
+            }
+        }
+    }
     
     private let dayFormatter: DateFormatter = {
         let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; return f
@@ -157,6 +166,32 @@ class BudgetStore: ObservableObject {
         let end = calendar.date(byAdding: .day, value: -1, to: nextMonth) ?? start
         return (start, end)
     }
+
+    private func periodBounds(for date: Date) -> (start: Date, endExclusive: Date) {
+        let calendar = Calendar.current
+        let start = getStartOfPeriod(for: date)
+
+        if let nextPaycheck = paycheckDates.sorted().first(where: { $0 > start }) {
+            return (start, nextPaycheck)
+        }
+
+        let currentStart = getStartOfPeriod(for: Date())
+        if calendar.isDate(start, inSameDayAs: currentStart) {
+            // Keep current period open-ended until a new paycheck posts.
+            return (start, Date.distantFuture)
+        }
+
+        let nextMonth = calendar.date(byAdding: .month, value: 1, to: start) ?? start
+        return (start, nextMonth)
+    }
+
+    private func isProjectedFuturePeriodStart(_ start: Date) -> Bool {
+        let calendar = Calendar.current
+        let currentStart = getStartOfPeriod(for: Date())
+        guard start > currentStart else { return false }
+        let hasPostedBoundary = paycheckDates.contains { calendar.isDate($0, inSameDayAs: start) }
+        return !hasPostedBoundary
+    }
     
     @Published var selectedDate: Date = Date() {
         didSet { updateCurrentPeriodCache() }
@@ -211,6 +246,9 @@ class BudgetStore: ObservableObject {
         
         if let min = UserDefaults.standard.object(forKey: "MinDate") as? Double {
             self.minDate = Date(timeIntervalSince1970: min)
+        }
+        if let savedAnchor = UserDefaults.standard.object(forKey: "LastConfirmedPaycheckDate") as? Double {
+            self.lastConfirmedPaycheckDate = Date(timeIntervalSince1970: savedAnchor)
         }
 
         // 2. CRITICAL FIX: Load Budgets BEFORE Categories
@@ -269,18 +307,19 @@ class BudgetStore: ObservableObject {
     }
 
     private func updateCurrentPeriodCache() {
-        let periodStart = getStartOfPeriod(for: selectedDate)
-        
-        let periodEnd: Date
-        if let nextPaycheck = paycheckDates.sorted().first(where: { $0 > periodStart }) {
-            periodEnd = nextPaycheck
-        } else {
-            periodEnd = Calendar.current.date(byAdding: .month, value: 1, to: periodStart)!
-        }
+        let (periodStart, periodEnd) = periodBounds(for: selectedDate)
+        let isProjectedFuturePeriod = isProjectedFuturePeriodStart(periodStart)
+        let now = Date()
         
         self.currentPeriodTransactions = transactions.filter { txn in
             if hiddenTransactionIDs.contains(txn.id) { return false }
-            return txn.date >= periodStart && txn.date < periodEnd
+            guard txn.date >= periodStart && txn.date < periodEnd else { return false }
+            // Keep already-posted transactions in the active current period
+            // until an actual paycheck creates the next boundary.
+            if isProjectedFuturePeriod && txn.date <= now {
+                return false
+            }
+            return true
         }
     }
 
@@ -357,7 +396,25 @@ class BudgetStore: ObservableObject {
             
             try await Task.sleep(nanoseconds: 1 * 1_000_000_000)
             
-            let fetchDate = startDate ?? Calendar.current.date(byAdding: .day, value: -7, to: Date())!
+            // Pull a wider rolling window so paycheck detection has enough history
+            // to keep period boundaries anchored to actual posted paychecks.
+            let defaultWindowStart = Calendar.current.date(byAdding: .day, value: -45, to: Date())!
+            var fetchDate = startDate ?? defaultWindowStart
+            if fetchDate > defaultWindowStart {
+                fetchDate = defaultWindowStart
+            }
+            if let anchor = lastConfirmedPaycheckDate,
+               let anchorWindowStart = Calendar.current.date(byAdding: .day, value: -35, to: anchor),
+               anchorWindowStart < fetchDate {
+                fetchDate = anchorWindowStart
+            }
+            if let minDate = self.minDate {
+                let minStart = Calendar.current.startOfDay(for: minDate)
+                if fetchDate < minStart {
+                    fetchDate = minStart
+                }
+            }
+            print("Transaction fetch start date: \(dayFormatter.string(from: fetchDate))")
             let (newTransactions, apiErrors) = try await service.fetchTransactions(apiKey: token, startDate: fetchDate)
             
             if !apiErrors.isEmpty {
@@ -464,6 +521,8 @@ class BudgetStore: ObservableObject {
             self.accessUrl = token
             let startDay = Calendar.current.component(.day, from: periodStart)
             self.budgetStartDay = startDay
+            self.lastConfirmedPaycheckDate = Calendar.current.startOfDay(for: periodStart)
+            self.minDate = importStartDate
             
             _ = await syncTransactions(
                 startDate: importStartDate,
@@ -472,7 +531,6 @@ class BudgetStore: ObservableObject {
             await refreshAccountProfile()
             
             self.setStartingBalance(initialBalance)
-            self.minDate = importStartDate
             
             if let lastTxn = transactions.max(by: { $0.date < $1.date }) {
                 self.selectedDate = lastTxn.date
@@ -488,23 +546,41 @@ class BudgetStore: ObservableObject {
         isSyncing = false
     }
     
-    // UPDATED: Fix for Future Periods
     func getStartOfPeriod(for date: Date) -> Date {
+        let today = Date()
+        let calendar = Calendar.current
+
         // 1. Try to find a paycheck on or before this date
         if let periodStart = paycheckDates.sorted().last(where: { $0 <= date || Calendar.current.isDate($0, inSameDayAs: date) }) {
-            
-            // CHECK: Is this paycheck "current"?
-            // We changed 35 to 28. This ensures that once you are a full month (28+ days)
-            // past the last paycheck, the app allows the new period to start
-            // instead of forcing it back to the previous one.
-            let daysDiff = Calendar.current.dateComponents([.day], from: periodStart, to: date).day ?? 0
+            // For current/past dates, anchor strictly to the latest posted paycheck.
+            // Do not roll to the next expected payday until a paycheck is actually posted.
+            if date <= today {
+                return periodStart
+            }
+
+            // For future dates, project forward using budgetStartDay only after a full cycle.
+            let daysDiff = calendar.dateComponents([.day], from: periodStart, to: date).day ?? 0
             if daysDiff < 28 {
                 return periodStart
             }
         }
+
+        // 1b. If there are no currently-detected paycheck transactions, keep using
+        // the last confirmed paycheck start until a new paycheck posts.
+        if let anchor = lastConfirmedPaycheckDate {
+            let anchoredDay = calendar.startOfDay(for: anchor)
+            if date <= today && date >= anchoredDay {
+                return anchoredDay
+            }
+            if date > today {
+                let daysDiff = calendar.dateComponents([.day], from: anchoredDay, to: date).day ?? 0
+                if daysDiff < 28 {
+                    return anchoredDay
+                }
+            }
+        }
         
         // 2. Fallback / Future Logic
-        let calendar = Calendar.current
         let day = calendar.component(.day, from: date)
         var comps = calendar.dateComponents([.year, .month], from: date)
         comps.day = self.budgetStartDay
@@ -532,6 +608,7 @@ class BudgetStore: ObservableObject {
         
         let rawDates = transactions
             .filter {
+                $0.isPending != true &&
                 getCategory(for: $0).lowercased().contains("paycheck") &&
                 absDecimal($0.decimalAmount) >= paycheckMinimumAmount
             }
@@ -552,11 +629,10 @@ class BudgetStore: ObservableObject {
         }
         
         self.paycheckDates = clusteredDates
-        
-        // NEW: Sync future projections to the most recent paycheck date.
-        // This ensures that if your paycheck lands on the 23rd,
-        // the future months (Feb, Mar, etc.) will also default to starting on the 23rd.
+        print("Detected paycheck dates: \(clusteredDates.map { dayFormatter.string(from: $0) })")
+
         if let lastPaycheck = clusteredDates.max() {
+            self.lastConfirmedPaycheckDate = lastPaycheck
             let day = calendar.component(.day, from: lastPaycheck)
             if self.budgetStartDay != day {
                 self.budgetStartDay = day
@@ -631,19 +707,21 @@ class BudgetStore: ObservableObject {
     }
     
     func getProjectedEnd(for date: Date) -> Decimal {
-        let periodStart = getStartOfPeriod(for: date)
-        
-        let periodEnd: Date
-        if let nextPaycheck = paycheckDates.sorted().first(where: { $0 > periodStart }) {
-            periodEnd = nextPaycheck
-        } else {
-            periodEnd = Calendar.current.date(byAdding: .month, value: 1, to: periodStart)!
-        }
+        let (periodStart, periodEnd) = periodBounds(for: date)
+        let historyStart = minDate.map { Calendar.current.startOfDay(for: $0) } ?? Date.distantPast
         
         let referenceDate = min(Date(), periodEnd)
         
         let activeTxns = transactions.filter { !hiddenTransactionIDs.contains($0.id) }
-        let currentActual = startingBalance + activeTxns.filter { $0.date <= referenceDate }.reduce(0) { $0 + $1.decimalAmount }
+        let currentActual = startingBalance + activeTxns.filter {
+            $0.date >= historyStart && $0.date <= referenceDate
+        }.reduce(0) { $0 + $1.decimalAmount }
+
+        // If current period is open-ended (waiting on next posted paycheck),
+        // "projected end" should just be today's actual balance.
+        if periodEnd == Date.distantFuture {
+            return currentActual
+        }
         
         var projectedAdjustment: Decimal = 0.0
         
@@ -685,8 +763,15 @@ class BudgetStore: ObservableObject {
     
     func changeMonth(by value: Int) {
         guard !paycheckDates.isEmpty else {
-            guard let newDate = Calendar.current.date(byAdding: .month, value: value, to: selectedDate) else { return }
-            selectedDate = newDate
+            let currentStart = getStartOfPeriod(for: selectedDate)
+            guard let targetStart = Calendar.current.date(byAdding: .month, value: value, to: currentStart) else { return }
+            let actualCurrentStart = getStartOfPeriod(for: Date())
+            if targetStart > actualCurrentStart && targetStart <= Date() {
+                // Keep projected (future) periods reachable even if their nominal start date is in the past.
+                selectedDate = Calendar.current.date(byAdding: .day, value: 1, to: Date()) ?? targetStart
+            } else {
+                selectedDate = targetStart
+            }
             return
         }
         
@@ -698,8 +783,13 @@ class BudgetStore: ObservableObject {
             if newIndex >= 0 && newIndex < sorted.count {
                 selectedDate = sorted[newIndex]
             } else if newIndex >= sorted.count {
-                if let newDate = Calendar.current.date(byAdding: .month, value: 1, to: selectedDate) {
-                    selectedDate = newDate
+                if let targetStart = Calendar.current.date(byAdding: .month, value: value, to: currentStart) {
+                    let actualCurrentStart = getStartOfPeriod(for: Date())
+                    if targetStart > actualCurrentStart && targetStart <= Date() {
+                        selectedDate = Calendar.current.date(byAdding: .day, value: 1, to: Date()) ?? targetStart
+                    } else {
+                        selectedDate = targetStart
+                    }
                 }
             } else if newIndex < 0 {
                 // Limit to oldest
@@ -793,6 +883,7 @@ class BudgetStore: ObservableObject {
         let targetStart = getStartOfPeriod(for: selectedDate)
         let now = Date()
         let currentStart = getStartOfPeriod(for: now)
+        let historyStart = minDate.map { Calendar.current.startOfDay(for: $0) } ?? Date.distantPast
         
         if targetStart > currentStart {
             // 1. Start with the projected ending balance of the ACTUAL current period.
@@ -804,7 +895,7 @@ class BudgetStore: ObservableObject {
             var pointer = Calendar.current.date(byAdding: .month, value: 1, to: currentStart)!
             
             // While our pointer is still BEFORE the target month...
-            while getStartOfPeriod(for: pointer) < targetStart {
+            while pointer < targetStart {
                 // ...add the Net Budget (Income - Expenses) for that intermediate month.
                 accumulated += getNetBudget(for: pointer)
                 
@@ -816,7 +907,9 @@ class BudgetStore: ObservableObject {
         } else {
             // Past Logic (Unchanged)
             let past = transactions.filter {
-                !hiddenTransactionIDs.contains($0.id) && $0.date < targetStart
+                !hiddenTransactionIDs.contains($0.id) &&
+                $0.date >= historyStart &&
+                $0.date < targetStart
             }
             return startingBalance + past.reduce(0) { $0 + $1.decimalAmount }
         }
